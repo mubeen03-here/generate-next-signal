@@ -44,6 +44,10 @@ st.markdown("""
     .mtf-box { background-color: #1a2332; border-left: 5px solid #00b8ff; padding: 10px; border-radius: 8px; }
     .sr-box { background-color: #2a1a2e; border-left: 5px solid #ff9800; padding: 10px; border-radius: 8px; }
     .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 10px; border-radius: 8px; }
+    .candle-status { background-color: #1a1a2e; border-left: 5px solid #ffaa00; padding: 8px 15px; border-radius: 8px; display: inline-block; }
+    .green-dot { color: #00ff00; font-size: 1.5rem; }
+    .red-dot { color: #ff0000; font-size: 1.5rem; }
+    .cooldown-box { background-color: #2a2a1a; border: 1px solid #ffaa00; padding: 5px 15px; border-radius: 8px; margin: 5px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,10 +58,32 @@ if "last_price_check" not in st.session_state:
     st.session_state.last_price_check = {}
 if "data_source" not in st.session_state:
     st.session_state.data_source = "Yahoo Finance"
+if "last_alert_time" not in st.session_state:
+    st.session_state.last_alert_time = {}
+if "cooldown_settings" not in st.session_state:
+    st.session_state.cooldown_settings = {
+        "5m": 5, "15m": 10, "30m": 15, "1h": 30, "4h": 60
+    }
 
 def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
+
+# ==================== COOLDOWN CHECK (ONLY FOR ALERTS) ====================
+def check_alert_cooldown(ticker, tf):
+    """Check if cooldown period has passed for alerts (Telegram/Email) only"""
+    cooldown_minutes = st.session_state.cooldown_settings.get(tf, 10)
+    current_time = time.time()
+    
+    if ticker in st.session_state.last_alert_time:
+        time_diff = (current_time - st.session_state.last_alert_time[ticker]) / 60
+        if time_diff < cooldown_minutes:
+            remaining = int(cooldown_minutes - time_diff)
+            return False, remaining
+    return True, 0
+
+def update_alert_cooldown(ticker):
+    st.session_state.last_alert_time[ticker] = time.time()
 
 # ==================== TELEGRAM ALERT ====================
 def send_telegram_alert(symbol, signal, price, tp, sl):
@@ -76,8 +102,10 @@ def send_telegram_alert(symbol, signal, price, tp, sl):
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
         requests.post(url, json=payload, timeout=5)
+        return True
     except Exception as e:
         st.warning(f"Telegram alert fail: {str(e)}")
+        return False
 
 # ==================== EMAIL ALERT ====================
 def send_email_alert(symbol, signal, price, tp, sl):
@@ -103,8 +131,10 @@ This is an automated alert from your Trading App.
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_PASSWORD"])
             smtp.send_message(msg)
+        return True
     except Exception as e:
         st.warning(f"Email alert fail: {str(e)}")
+        return False
 
 # ==================== NEON DATABASE (WITH RETRY) ====================
 def get_conn():
@@ -173,8 +203,9 @@ def save_signal(symbol, signal, entry, target, sl):
     except Exception as e:
         st.error(f"❌ Failed to save signal: {str(e)}")
 
-# ==================== UPDATED SIGNAL UPDATE (TIMEFZONE FIX) ====================
+# ==================== AUTO BACKTEST (HIGH/LOW CHECK) ====================
 def update_old_signals(symbol, df):
+    """Auto backtest - High/Low check with timezone fix"""
     conn = get_conn()
     if conn is None:
         return
@@ -193,14 +224,14 @@ def update_old_signals(symbol, df):
             if not rows:
                 return
             
-            # Convert DataFrame datetime to naive (remove timezone) once
+            # Remove timezone from DataFrame
             df['Datetime'] = pd.to_datetime(df['Datetime']).dt.tz_localize(None)
             
             for row in rows:
                 signal_id, signal_time, sig, target, sl = row
-                signal_dt = pd.to_datetime(signal_time)  # naive already
+                signal_dt = pd.to_datetime(signal_time)
                 
-                # Filter candles after signal timestamp
+                # Find candles after signal
                 next_candles = df[df['Datetime'] > signal_dt]
                 if next_candles.empty:
                     continue
@@ -248,6 +279,71 @@ def get_stats(symbol):
     except Exception as e:
         st.error(f"❌ Failed to get stats: {str(e)}")
         return None, 0
+
+# ==================== IMPROVED S/R DETECTION (MULTIPLE TOUCHES) ====================
+def find_strong_sr_levels(df, lookback=50, touch_threshold=2):
+    """
+    Detect levels where price has been rejected multiple times
+    """
+    if df is None or len(df) < lookback:
+        return None, None
+    
+    recent = df.iloc[-lookback:]
+    resistance = recent['High'].max()
+    support = recent['Low'].min()
+    
+    # Check how many times these levels were touched
+    touch_count_res = 0
+    touch_count_sup = 0
+    tolerance = (resistance - support) * 0.002  # 0.2% tolerance
+    
+    for i in range(len(recent) - 1):
+        high = recent.iloc[i]['High']
+        low = recent.iloc[i]['Low']
+        if abs(high - resistance) <= tolerance:
+            touch_count_res += 1
+        if abs(low - support) <= tolerance:
+            touch_count_sup += 1
+    
+    # Only return if touched multiple times (strong levels)
+    if touch_count_res >= touch_threshold:
+        resistance = resistance
+    else:
+        resistance = None
+    
+    if touch_count_sup >= touch_threshold:
+        support = support
+    else:
+        support = None
+    
+    return support, resistance
+
+# ==================== CANDLE STATUS (PRESENT/NEXT) ====================
+def get_candle_status(df):
+    """Returns current candle color and next candle prediction status"""
+    if df is None or len(df) < 2:
+        return "Unknown", "Unknown", "Unknown", "Unknown"
+    
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # Present candle color
+    if last['Close'] > last['Open']:
+        present_color = "🟢 Green (Bullish)"
+        present_emoji = "🟢"
+    else:
+        present_color = "🔴 Red (Bearish)"
+        present_emoji = "🔴"
+    
+    # Next candle direction (based on momentum)
+    if last['Close'] > prev['Close']:
+        next_prediction = "🟢 Bullish expected" if last['Close'] > last['Open'] else "🔄 Reversal possible"
+        next_emoji = "🟢" if last['Close'] > last['Open'] else "🔄"
+    else:
+        next_prediction = "🔴 Bearish expected" if last['Close'] < last['Open'] else "🔄 Reversal possible"
+        next_emoji = "🔴" if last['Close'] < last['Open'] else "🔄"
+    
+    return present_color, present_emoji, next_prediction, next_emoji
 
 # ==================== FAILOVER DATA FETCH ====================
 @st.cache_data(ttl=40, show_spinner=False)
@@ -320,13 +416,6 @@ def fetch_ohlcv(ticker, interval="15m", period="5d"):
         st.session_state.data_source = "ERROR"
         return None
 
-# ==================== S/R LEVELS ====================
-def find_sr_levels(df, lookback=30):
-    if df is None or len(df) < lookback:
-        return None, None
-    recent = df.iloc[-lookback:]
-    return recent['Low'].min(), recent['High'].max()
-
 # ==================== CANDLE PATTERNS ====================
 def detect_candle_patterns(df):
     if df is None or len(df) < 2:
@@ -354,7 +443,7 @@ def detect_candle_patterns(df):
         patterns.append("🔥 Bullish Marubozu (Strong)" if last['Close'] > last['Open'] else "💧 Bearish Marubozu (Strong)")
     return patterns
 
-# ==================== SIGNAL ENGINE ====================
+# ==================== SIGNAL ENGINE (NEXT CANDLE FOCUS) ====================
 def calculate_advanced_signal(df, df_higher=None):
     if df is None or len(df) < 40:
         return None
@@ -393,11 +482,13 @@ def calculate_advanced_signal(df, df_higher=None):
 
     last = df.iloc[-1]
     price = float(last['Close'])
+    
     score = 0
     reasons = []
     signal_details = {}
-
     mtf_bias = 0
+
+    # ----- MTF TREND -----
     if df_higher is not None and len(df_higher) > 20:
         h_close = df_higher['Close']
         h_ema50 = h_close.ewm(span=50, adjust=False).mean().iloc[-1]
@@ -412,6 +503,7 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         reasons.append("⚠️ Higher TF data missing, using only lower TF")
 
+    # ----- EMA STRUCTURE -----
     if price > last['EMA_9'] > last['EMA_21']:
         score += 2
         reasons.append("✅ EMA Structure: Bullish (9>21)")
@@ -421,6 +513,7 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         reasons.append("➖ EMA Structure: Neutral")
 
+    # ----- RSI (Dynamic Weight) -----
     rsi = float(last['RSI'])
     if rsi > 70:
         score -= 2
@@ -437,6 +530,7 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         reasons.append(f"➖ RSI Neutral ({rsi:.1f})")
 
+    # ----- MACD -----
     if last['MACD_Hist'] > 0:
         score += 1.5
         reasons.append("✅ MACD Positive Histogram")
@@ -444,37 +538,50 @@ def calculate_advanced_signal(df, df_higher=None):
         score -= 1.5
         reasons.append("❌ MACD Negative Histogram")
 
+    # ----- VOLUME SPIKE -----
     vol_ma = float(last['Volume_MA'])
     vol_now = float(last['Volume'])
     if vol_ma > 0 and vol_now > vol_ma * 1.5:
         if score > 0:
             score += 1
-            reasons.append(f"📈 Volume Spike ({vol_now/vol_ma:.1f}x Avg) -> Confirms Bullish")
+            reasons.append(f"📈 Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
         elif score < 0:
             score -= 1
-            reasons.append(f"📉 Volume Spike ({vol_now/vol_ma:.1f}x Avg) -> Confirms Bearish")
+            reasons.append(f"📉 Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
         else:
-            reasons.append(f"📊 Volume Spike ({vol_now/vol_ma:.1f}x Avg) but direction neutral")
+            reasons.append(f"📊 Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
     else:
         reasons.append("➖ Volume normal")
 
-    support, resistance = find_sr_levels(df, lookback=25)
+    # ----- STRONG S/R DETECTION (MULTIPLE TOUCHES) -----
+    support, resistance = find_strong_sr_levels(df, lookback=50, touch_threshold=2)
     if support and resistance:
         range_width = resistance - support
         if range_width > 0:
             dist_to_support = (price - support) / range_width
             dist_to_resistance = (resistance - price) / range_width
-            if dist_to_support < 0.1:
-                score += 1.5
-                reasons.append(f"🟢 Near Support (${support:.2f}) -> Bounce likely")
-            elif dist_to_resistance < 0.1:
-                score -= 1.5
-                reasons.append(f"🔴 Near Resistance (${resistance:.2f}) -> Rejection likely")
+            
+            # Strong Resistance - Rejection expected
+            if dist_to_resistance < 0.1:
+                score -= 3
+                reasons.append(f"🔴 NEAR STRONG RESISTANCE (${resistance:.2f}) - REJECTION LIKELY")
+                if score > 0:
+                    score = 0
+                    reasons.append("⚠️ BUY signal cancelled due to strong resistance")
+            
+            # Strong Support - Bounce expected
+            elif dist_to_support < 0.1:
+                score += 2
+                reasons.append(f"🟢 NEAR STRONG SUPPORT (${support:.2f}) - BOUNCE LIKELY")
+                if score < 0:
+                    score = 0
+                    reasons.append("⚠️ SELL signal cancelled due to strong support")
             else:
                 reasons.append(f"➖ Mid-range (S: {support:.2f}, R: {resistance:.2f})")
         signal_details['support'] = support
         signal_details['resistance'] = resistance
 
+    # ----- CANDLE PATTERNS -----
     patterns = detect_candle_patterns(df)
     if patterns:
         for p in patterns:
@@ -489,6 +596,7 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         reasons.append("➖ No strong pattern detected")
 
+    # ----- FINAL SCORE -----
     atr = float(last['ATR'])
     if atr / price < 0.005:
         threshold_buy, threshold_sell = 3.5, -3.5
@@ -506,15 +614,16 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         signal, badge = "WAIT", "neutral"
 
+    # ----- SL/TP -----
     sl_price = price - (1.5 * atr) if "BUY" in signal else price + (1.5 * atr)
     tp_price = price + (2.5 * atr) if "BUY" in signal else price - (2.5 * atr)
     rr_ratio = round(2.5 / 1.5, 2)
 
     if "BUY" in signal:
-        expected = f"🟢 Next candle likely BULLISH (Green). Target: {tp_price:.2f}"
+        expected = f"🟢 NEXT CANDLE LIKELY BULLISH (Green). Target: {tp_price:.2f}"
         pullback = f"📉 Small retrace to {price - (0.5*atr):.2f} possible before up move."
     elif "SELL" in signal:
-        expected = f"🔴 Next candle likely BEARISH (Red). Target: {tp_price:.2f}"
+        expected = f"🔴 NEXT CANDLE LIKELY BEARISH (Red). Target: {tp_price:.2f}"
         pullback = f"📈 Small bounce to {price + (0.5*atr):.2f} possible before down move."
     else:
         expected = "⏳ Direction unclear. Better to WAIT for break of S/R."
@@ -531,7 +640,7 @@ def calculate_advanced_signal(df, df_higher=None):
         "support": signal_details.get('support', None), "resistance": signal_details.get('resistance', None)
     }
 
-# ==================== GROK ====================
+# ==================== GROK & GEMINI ====================
 def get_grok_analysis(symbol, tf, analysis, price):
     prompt = f"Symbol: {symbol} | TF: {tf} | Price: {price}\nSignal: {analysis['signal']} | Score: {analysis['score']}\nReasons: {', '.join(analysis['reasons'])}\nPatterns: {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}\nMTF Bias: {analysis['mtf_bias']}\nSL: {analysis['sl']} | TP: {analysis['tp']}\n\nAs a pro trader, give short, direct advice on this trade:\n1. Is this signal reliable? Why?\n2. What is the probability of next candle going as expected?\n3. Should we enter now or wait? (give specific price action triggers)\nMax 6 lines."
     try:
@@ -540,7 +649,6 @@ def get_grok_analysis(symbol, tf, analysis, price):
     except Exception as e:
         return f"Grok unavailable: {str(e)}"
 
-# ==================== GEMINI ====================
 def analyze_chart_with_gemini(image, symbol, tf):
     if "GEMINI_API_KEY" not in st.secrets:
         return "Gemini API key missing."
@@ -558,7 +666,22 @@ def analyze_chart_with_gemini(image, symbol, tf):
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">🚀 Pro Max Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"🇵🇰 {get_pakistan_time()} | Advanced MTF + Volume + S/R + Patterns + Backtest | Neon DB")
+st.caption(f"🇵🇰 {get_pakistan_time()} | Advanced MTF + Strong S/R + Next Candle Focus | Neon DB")
+
+# ---- COOLDOWN SETTINGS (ONLY FOR ALERTS) ----
+with st.expander("⚙️ Cooldown Settings (Telegram & Email Alerts Only)"):
+    st.info("⏳ Cooldown sirf Telegram aur Email alerts ke liye hai. Dashboard signals hamesha generate honge.")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.session_state.cooldown_settings["5m"] = st.number_input("5m", min_value=1, max_value=30, value=st.session_state.cooldown_settings["5m"])
+    with col2:
+        st.session_state.cooldown_settings["15m"] = st.number_input("15m", min_value=1, max_value=30, value=st.session_state.cooldown_settings["15m"])
+    with col3:
+        st.session_state.cooldown_settings["30m"] = st.number_input("30m", min_value=1, max_value=60, value=st.session_state.cooldown_settings["30m"])
+    with col4:
+        st.session_state.cooldown_settings["1h"] = st.number_input("1h", min_value=1, max_value=120, value=st.session_state.cooldown_settings["1h"])
+    with col5:
+        st.session_state.cooldown_settings["4h"] = st.number_input("4h", min_value=1, max_value=240, value=st.session_state.cooldown_settings["4h"])
 
 if st.button("🔄 Refresh Data & Backtest"):
     st.cache_data.clear()
@@ -613,13 +736,22 @@ if st.session_state.get("selected_symbol"):
         st.error("Data nahi aa raha. Kuch der baad refresh karein.")
         st.stop()
     
+    # ---- CANDLE STATUS (PRESENT / NEXT) ----
+    present_color, present_emoji, next_prediction, next_emoji = get_candle_status(df_lower)
+    st.markdown(f"""
+    <div class="candle-status">
+        <b>🕯️ Present Candle:</b> {present_emoji} {present_color}<br>
+        <b>🔮 Next Candle Prediction:</b> {next_emoji} {next_prediction}
+    </div>
+    """, unsafe_allow_html=True)
+    
     analysis = calculate_advanced_signal(df_lower, df_higher)
     
     if analysis:
         if len(df_lower) > 2:
             st.session_state.last_price_check[ticker] = float(df_lower['Close'].iloc[-1])
         
-        # ---- SAVE SIGNAL & SEND ALERTS ----
+        # ---- SAVE SIGNAL TO DB (ALWAYS SAVE, NO COOLDOWN) ----
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             save_signal(
                 symbol=ticker,
@@ -628,25 +760,38 @@ if st.session_state.get("selected_symbol"):
                 target=analysis['tp'],
                 sl=analysis['sl']
             )
-            send_telegram_alert(
-                symbol=name,
-                signal=analysis['signal'],
-                price=analysis['last_price'],
-                tp=analysis['tp'],
-                sl=analysis['sl']
-            )
-            send_email_alert(
-                symbol=name,
-                signal=analysis['signal'],
-                price=analysis['last_price'],
-                tp=analysis['tp'],
-                sl=analysis['sl']
-            )
-            st.success("✅ Signal saved! Alerts sent to Telegram & Email.")
         
-        # ---- UPDATE OLD SIGNALS (FIXED TIMEFZONE) ----
+        # ---- UPDATE OLD SIGNALS (AUTO BACKTEST) ----
         if db_initialized:
             update_old_signals(ticker, df_lower)
+        
+        # ---- SEND ALERTS (WITH COOLDOWN CHECK) ----
+        if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
+            can_alert, remaining = check_alert_cooldown(ticker, tf_lower)
+            
+            if can_alert:
+                # Send alerts
+                telegram_sent = send_telegram_alert(
+                    symbol=name,
+                    signal=analysis['signal'],
+                    price=analysis['last_price'],
+                    tp=analysis['tp'],
+                    sl=analysis['sl']
+                )
+                email_sent = send_email_alert(
+                    symbol=name,
+                    signal=analysis['signal'],
+                    price=analysis['last_price'],
+                    tp=analysis['tp'],
+                    sl=analysis['sl']
+                )
+                if telegram_sent and email_sent:
+                    st.success("✅ Alerts sent to Telegram & Email!")
+                    update_alert_cooldown(ticker)  # Update cooldown only when alerts sent
+                else:
+                    st.warning("⚠️ Alerts partially failed. Check logs.")
+            else:
+                st.info(f"⏳ Alerts skipped due to cooldown. Next alerts available after {remaining} minutes. (Signal saved in DB)")
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 Price", f"{analysis['last_price']:,}")
@@ -664,7 +809,7 @@ if st.session_state.get("selected_symbol"):
             sr_text = f"S: {analysis['support']:.2f}" if analysis['support'] else "S: N/A"
             sr_text += f" | R: {analysis['resistance']:.2f}" if analysis['resistance'] else "| R: N/A"
             st.markdown(
-                f"<div class='sr-box'><b>📌 Key Levels:</b> {sr_text}<br><b>Patterns:</b> {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}</div>",
+                f"<div class='sr-box'><b>📌 Strong Levels (Multiple Touches):</b> {sr_text}<br><b>Patterns:</b> {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}</div>",
                 unsafe_allow_html=True
             )
         
@@ -686,7 +831,7 @@ if st.session_state.get("selected_symbol"):
                 mid = (sr + rr) / 2
                 st.markdown(
                     f"<div class='backtest-box'><b>⏳ WAIT - Why?</b><br>"
-                    f"🔸 Market range mein hai.<br>"
+                    f"🔸 Market near strong S/R levels.<br>"
                     f"🔸 <b>Buy agar:</b> Price {rr:.2f} break kare (Resistance ke upar).<br>"
                     f"🔸 <b>Sell agar:</b> Price {sr:.2f} break kare (Support ke neechay).<br>"
                     f"🔸 Abhi mid-range ({mid:.2f}) mein hai, koi setup nahi.</div>",
@@ -743,4 +888,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v3.2 | Timezone Fixed + High/Low Backtest | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v4.1 | Cooldown Only for Alerts | Next Candle Focus + Strong S/R + Auto Backtest | Neon DB (Permanent)")
