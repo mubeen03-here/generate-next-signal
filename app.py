@@ -106,38 +106,50 @@ This is an automated alert from your Trading App.
     except Exception as e:
         st.warning(f"Email alert fail: {str(e)}")
 
-# ==================== NEON DATABASE ====================
+# ==================== NEON DATABASE (WITH RETRY SYSTEM) ====================
 def get_conn():
-    try:
-        return st.connection("neon", type="sql")
-    except Exception as e:
-        st.error(f"❌ Database connection failed: {str(e)}")
-        return None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return st.connection("neon", type="sql")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2)  # 2 second wait karo phir try karo
+                continue
+            else:
+                st.error(f"❌ Database connection failed after {max_retries} attempts: {str(e)}")
+                return None
 
 def init_db():
     conn = get_conn()
     if conn is None:
         return False
-    try:
-        with conn.session as s:
-            s.execute(text("""
-                CREATE TABLE IF NOT EXISTS signal_history (
-                    id SERIAL PRIMARY KEY,
-                    timestamp TEXT,
-                    symbol TEXT,
-                    signal TEXT,
-                    entry_price REAL,
-                    target_price REAL,
-                    stop_loss REAL,
-                    status TEXT DEFAULT 'PENDING',
-                    result TEXT
-                )
-            """))
-            s.commit()
-            return True
-    except Exception as e:
-        st.error(f"❌ Failed to create table: {str(e)}")
-        return False
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with conn.session as s:
+                s.execute(text("""
+                    CREATE TABLE IF NOT EXISTS signal_history (
+                        id SERIAL PRIMARY KEY,
+                        timestamp TEXT,
+                        symbol TEXT,
+                        signal TEXT,
+                        entry_price REAL,
+                        target_price REAL,
+                        stop_loss REAL,
+                        status TEXT DEFAULT 'PENDING',
+                        result TEXT
+                    )
+                """))
+                s.commit()
+                return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2)
+                continue
+            else:
+                st.error(f"❌ Failed to create table after {max_retries} attempts: {str(e)}")
+                return False
 
 def save_signal(symbol, signal, entry, target, sl):
     conn = get_conn()
@@ -212,7 +224,7 @@ def get_stats(symbol):
         st.error(f"❌ Failed to get stats: {str(e)}")
         return None, 0
 
-# ==================== FAILOVER DATA FETCH (YFINANCE + ALPHA VANTAGE) ====================
+# ==================== FAILOVER DATA FETCH ====================
 @st.cache_data(ttl=40, show_spinner=False)
 def fetch_ohlcv(ticker, interval="15m", period="5d"):
     # ----- 1. YFINANCE -----
@@ -706,4 +718,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v3.0 | Multi-TF + Failover + Telegram + Email | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v3.0 | Multi-TF + Failover + Telegram + Email | Neon DB (Permanent) | Retry Enabled")
