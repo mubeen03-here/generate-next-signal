@@ -9,6 +9,10 @@ import google.generativeai as genai
 from PIL import Image
 from sqlalchemy import text
 import time
+import requests  # Telegram ke liye
+import smtplib   # Email ke liye
+from email.message import EmailMessage  # Email ke liye
+from alpha_vantage.timeseries import TimeSeries  # Failover ke liye
 
 # ==================== API KEYS SETUP ====================
 if "GROQ_API_KEY" in st.secrets:
@@ -40,7 +44,6 @@ st.markdown("""
     .mtf-box { background-color: #1a2332; border-left: 5px solid #00b8ff; padding: 10px; border-radius: 8px; }
     .sr-box { background-color: #2a1a2e; border-left: 5px solid #ff9800; padding: 10px; border-radius: 8px; }
     .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 10px; border-radius: 8px; }
-    .error-box { background-color: #3d1a1a; border: 1px solid #ff4444; padding: 10px; border-radius: 8px; color: #ff6666; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -49,12 +52,61 @@ if "signal_history" not in st.session_state:
     st.session_state.signal_history = []
 if "last_price_check" not in st.session_state:
     st.session_state.last_price_check = {}
+if "data_source" not in st.session_state:
+    st.session_state.data_source = "Yahoo Finance"
 
 def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
 
-# ==================== NEON DATABASE FUNCTIONS (WITH ERROR HANDLING) ====================
+# ==================== TELEGRAM ALERT FUNCTION ====================
+def send_telegram_alert(symbol, signal, price, tp, sl):
+    try:
+        token = st.secrets["TELEGRAM_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+        message = f"""
+🚨 *TRADING SIGNAL* 🚨
+📊 Symbol: {symbol}
+📈 Signal: {signal}
+💰 Price: {price:.2f}
+🎯 Target: {tp:.2f}
+🛑 Stop Loss: {sl:.2f}
+⏰ Time: {datetime.now().strftime('%I:%M %p PKT')}
+        """
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        st.warning(f"Telegram alert fail: {str(e)}")
+
+# ==================== EMAIL ALERT FUNCTION ====================
+def send_email_alert(symbol, signal, price, tp, sl):
+    try:
+        msg = EmailMessage()
+        msg.set_content(f"""
+Trading Signal Alert!
+
+Symbol: {symbol}
+Signal: {signal}
+Entry Price: {price:.2f}
+Target: {tp:.2f}
+Stop Loss: {sl:.2f}
+Time: {datetime.now().strftime('%d %b %Y %I:%M %p PKT')}
+
+---
+This is an automated alert from your Trading App.
+        """)
+        msg['Subject'] = f"🚨 {signal} Signal on {symbol}!"
+        msg['From'] = st.secrets["EMAIL_SENDER"]
+        msg['To'] = st.secrets["EMAIL_RECEIVER"]
+        
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_PASSWORD"])
+            smtp.send_message(msg)
+    except Exception as e:
+        st.warning(f"Email alert fail: {str(e)}")
+
+# ==================== NEON DATABASE FUNCTIONS ====================
 def get_conn():
     try:
         return st.connection("neon", type="sql")
@@ -160,39 +212,86 @@ def get_stats(symbol):
         st.error(f"❌ Failed to get stats: {str(e)}")
         return None, 0
 
-# ==================== DATA FETCH ====================
+# ==================== FAILOVER DATA FETCH (YFINANCE + ALPHA VANTAGE) ====================
 @st.cache_data(ttl=40, show_spinner=False)
 def fetch_ohlcv(ticker, interval="15m", period="5d"):
+    global data_source_status
+    data_source_status = "Yahoo Finance"
+    
+    # ----- 1. PEHLE YFINANCE TRY KARO -----
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
-        if df is None or df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = ['_'.join(col).strip() for col in df.columns.values]
-        df = df.reset_index()
-        rename_map = {}
-        for col in df.columns:
-            col_lower = col.lower()
-            if 'datetime' in col_lower or 'date' in col_lower:
-                rename_map[col] = 'Datetime'
-            elif 'open' in col_lower:
-                rename_map[col] = 'Open'
-            elif 'high' in col_lower:
-                rename_map[col] = 'High'
-            elif 'low' in col_lower:
-                rename_map[col] = 'Low'
-            elif 'close' in col_lower:
-                rename_map[col] = 'Close'
-            elif 'volume' in col_lower:
-                rename_map[col] = 'Volume'
-        df = df.rename(columns=rename_map)
-        if 'Close' not in df.columns:
+        if df is not None and not df.empty:
+            # Clean columns
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = ['_'.join(col).strip() for col in df.columns.values]
+            df = df.reset_index()
+            rename_map = {}
+            for col in df.columns:
+                col_lower = col.lower()
+                if 'datetime' in col_lower or 'date' in col_lower:
+                    rename_map[col] = 'Datetime'
+                elif 'open' in col_lower:
+                    rename_map[col] = 'Open'
+                elif 'high' in col_lower:
+                    rename_map[col] = 'High'
+                elif 'low' in col_lower:
+                    rename_map[col] = 'Low'
+                elif 'close' in col_lower:
+                    rename_map[col] = 'Close'
+                elif 'volume' in col_lower:
+                    rename_map[col] = 'Volume'
+            df = df.rename(columns=rename_map)
+            if 'Close' not in df.columns:
+                return None
+            if 'Volume' not in df.columns:
+                df['Volume'] = 1000
+            data_source_status = "Yahoo Finance"
+            return df[['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+    except:
+        pass  # Agar yahoo fail ho toh agla try karo
+
+    # ----- 2. AGAR YFINANCE FAIL HO TOH ALPHA VANTAGE TRY KARO -----
+    try:
+        if "ALPHA_VANTAGE_KEY" not in st.secrets:
+            st.warning("Alpha Vantage key missing. Install from alphavantage.co")
             return None
-        if 'Volume' not in df.columns:
-            df['Volume'] = 1000
-        return df[['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+            
+        ts = TimeSeries(key=st.secrets["ALPHA_VANTAGE_KEY"])
+        # Interval mapping
+        av_interval = "15min"  # default
+        if interval == "5m":
+            av_interval = "5min"
+        elif interval == "15m":
+            av_interval = "15min"
+        elif interval == "30m":
+            av_interval = "30min"
+        elif interval == "60m" or interval == "1h":
+            av_interval = "60min"
+        
+        # Alpha Vantage ko sirf standard tickers chahiye (BTC-USD -> BTCUSD)
+        av_symbol = ticker.replace("-", "").replace("=X", "")
+        
+        data, meta = ts.get_intraday(symbol=av_symbol, interval=av_interval, outputsize='compact')
+        df = pd.DataFrame.from_dict(data, orient='index')
+        df = df.rename(columns={
+            '1. open': 'Open',
+            '2. high': 'High',
+            '3. low': 'Low',
+            '4. close': 'Close',
+            '5. volume': 'Volume'
+        })
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
+        df = df.reset_index().rename(columns={'index': 'Datetime'})
+        data_source_status = "Alpha Vantage (Backup)"
+        return df
     except Exception as e:
+        st.error(f"⚠️ Data Source Fail: Dono sources (Yahoo aur Alpha Vantage) kaam nahi kar rahe. Error: {e}")
         return None
 
+# ==================== REST OF THE FUNCTIONS (S/R, PATTERNS, SIGNAL ENGINE) ====================
 def find_sr_levels(df, lookback=30):
     if df is None or len(df) < lookback:
         return None, None
@@ -435,12 +534,12 @@ if st.button("🔄 Refresh Data & Backtest"):
 
 MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "USD/JPY": "USDJPY=X", "NAS100": "NQ=F"}
 
-# ==================== INIT DATABASE (WITH ERROR HANDLING) ====================
+# ==================== INIT DATABASE ====================
 db_initialized = init_db()
 if db_initialized:
     st.success("✅ Database connected successfully!")
 else:
-    st.warning("⚠️ Database connection failed. Check secrets configuration. App will run with limited functionality.")
+    st.warning("⚠️ Database connection failed. Check secrets configuration.")
 
 cols = st.columns(3)
 for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
@@ -470,6 +569,7 @@ if st.session_state.get("selected_symbol"):
     name = st.session_state.get("selected_name", ticker)
     st.divider()
     st.subheader(f"📊 {name} ({ticker})")
+    st.caption(f"📡 Data Source: {data_source_status}")
     
     tf_lower = st.selectbox("Lower Timeframe (Entry)", ["5m", "15m", "30m"], index=1)
     tf_higher = st.selectbox("Higher Timeframe (Trend)", ["1h", "4h"], index=0)
@@ -487,8 +587,9 @@ if st.session_state.get("selected_symbol"):
         if len(df_lower) > 2:
             st.session_state.last_price_check[ticker] = float(df_lower['Close'].iloc[-1])
         
-        # ---- SAVE SIGNAL TO NEON ----
+        # ---- SAVE SIGNAL TO NEON & SEND ALERTS ----
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
+            # 1. Database mein save karo
             save_signal(
                 symbol=ticker,
                 signal=analysis['signal'],
@@ -496,6 +597,23 @@ if st.session_state.get("selected_symbol"):
                 target=analysis['tp'],
                 sl=analysis['sl']
             )
+            # 2. Telegram Alert (Phone par)
+            send_telegram_alert(
+                symbol=name,
+                signal=analysis['signal'],
+                price=analysis['last_price'],
+                tp=analysis['tp'],
+                sl=analysis['sl']
+            )
+            # 3. Email Alert (Backup/Report)
+            send_email_alert(
+                symbol=name,
+                signal=analysis['signal'],
+                price=analysis['last_price'],
+                tp=analysis['tp'],
+                sl=analysis['sl']
+            )
+            st.success("✅ Signal saved! Alerts sent to Telegram & Email.")
         
         # ---- UPDATE OLD SIGNALS ----
         if db_initialized:
@@ -560,7 +678,7 @@ if st.session_state.get("selected_symbol"):
                 st.info("📭 Abhi koi closed signal nahi. Pehle kuch trades complete hone dein.")
         else:
             st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
-        st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)" if db_initialized else "⚠️ Database not connected")
+        st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)")
         
         with st.expander("🧠 Technical Reasons (Score Breakup)"):
             for r in analysis['reasons']:
@@ -596,4 +714,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v2.0 | Multi-TF + Volume + S/R + Patterns + Dynamic Scoring | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v3.0 | Multi-TF + Failover + Telegram + Email | Neon DB (Permanent)")
