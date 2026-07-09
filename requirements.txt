@@ -6,3 +6,5 @@ pytz
 groq
 google-generativeai
 Pillow
+psycopg2-binary
+sqlalchemy
