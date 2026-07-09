@@ -52,6 +52,75 @@ def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
 
+# ==================== NEON DATABASE FUNCTIONS (PERMANENT) ====================
+def get_conn():
+    return st.connection("neon", type="sql")
+
+def init_db():
+    conn = get_conn()
+    with conn.session as s:
+        s.execute("""
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id SERIAL PRIMARY KEY,
+                timestamp TEXT,
+                symbol TEXT,
+                signal TEXT,
+                entry_price REAL,
+                target_price REAL,
+                stop_loss REAL,
+                status TEXT DEFAULT 'PENDING',
+                result TEXT
+            )
+        """)
+        s.commit()
+
+def save_signal(symbol, signal, entry, target, sl):
+    conn = get_conn()
+    with conn.session as s:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        s.execute("""
+            INSERT INTO signal_history (timestamp, symbol, signal, entry_price, target_price, stop_loss)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (now, symbol, signal, entry, target, sl))
+        s.commit()
+
+def update_old_signals(symbol, current_price):
+    conn = get_conn()
+    with conn.session as s:
+        rows = s.execute("""
+            SELECT id, signal, target_price, stop_loss 
+            FROM signal_history 
+            WHERE symbol=%s AND status='PENDING'
+        """, (symbol,)).fetchall()
+        
+        for row in rows:
+            id, sig, target, sl = row
+            result = None
+            if "BUY" in sig:
+                if current_price >= target:
+                    result = "WIN"
+                elif current_price <= sl:
+                    result = "LOSS"
+            elif "SELL" in sig:
+                if current_price <= target:
+                    result = "WIN"
+                elif current_price >= sl:
+                    result = "LOSS"
+            if result:
+                s.execute("UPDATE signal_history SET status='CLOSED', result=%s WHERE id=%s", (result, id))
+        s.commit()
+
+def get_stats(symbol):
+    conn = get_conn()
+    df = conn.query(
+        f"SELECT * FROM signal_history WHERE symbol='{symbol}' AND status='CLOSED' ORDER BY timestamp DESC LIMIT 10",
+        ttl="5s"
+    )
+    if len(df) == 0:
+        return None, 0
+    wins = len(df[df['result'] == 'WIN'])
+    return round((wins / len(df)) * 100), len(df)
+
 # ==================== DATA FETCH ====================
 @st.cache_data(ttl=40, show_spinner=False)
 def fetch_ohlcv(ticker, interval="15m", period="5d"):
@@ -117,7 +186,6 @@ def detect_candle_patterns(df):
         patterns.append("🔥 Bullish Marubozu (Strong)" if last['Close'] > last['Open'] else "💧 Bearish Marubozu (Strong)")
     return patterns
 
-# ==================== MAIN ADVANCED SIGNAL ENGINE ====================
 def calculate_advanced_signal(df, df_higher=None):
     if df is None or len(df) < 40:
         return None
@@ -160,7 +228,6 @@ def calculate_advanced_signal(df, df_higher=None):
     reasons = []
     signal_details = {}
 
-    # 1. MULTI-TIMEFRAME
     mtf_bias = 0
     if df_higher is not None and len(df_higher) > 20:
         h_close = df_higher['Close']
@@ -176,7 +243,6 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         reasons.append("⚠️ Higher TF data missing, using only lower TF")
 
-    # 2. INDICATORS
     if price > last['EMA_9'] > last['EMA_21']:
         score += 2
         reasons.append("✅ EMA Structure: Bullish (9>21)")
@@ -209,7 +275,6 @@ def calculate_advanced_signal(df, df_higher=None):
         score -= 1.5
         reasons.append("❌ MACD Negative Histogram")
 
-    # 3. VOLUME SPIKE
     vol_ma = float(last['Volume_MA'])
     vol_now = float(last['Volume'])
     if vol_ma > 0 and vol_now > vol_ma * 1.5:
@@ -224,7 +289,6 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         reasons.append("➖ Volume normal")
 
-    # 4. SUPPORT / RESISTANCE
     support, resistance = find_sr_levels(df, lookback=25)
     if support and resistance:
         range_width = resistance - support
@@ -242,7 +306,6 @@ def calculate_advanced_signal(df, df_higher=None):
         signal_details['support'] = support
         signal_details['resistance'] = resistance
 
-    # 5. CANDLE PATTERNS
     patterns = detect_candle_patterns(df)
     if patterns:
         for p in patterns:
@@ -257,7 +320,6 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         reasons.append("➖ No strong pattern detected")
 
-    # FINAL SCORE
     atr = float(last['ATR'])
     if atr / price < 0.005:
         threshold_buy, threshold_sell = 3.5, -3.5
@@ -300,7 +362,7 @@ def calculate_advanced_signal(df, df_higher=None):
         "support": signal_details.get('support', None), "resistance": signal_details.get('resistance', None)
     }
 
-# ==================== GROK ====================
+# ==================== GROK & GEMINI ====================
 def get_grok_analysis(symbol, tf, analysis, price):
     prompt = f"Symbol: {symbol} | TF: {tf} | Price: {price}\nSignal: {analysis['signal']} | Score: {analysis['score']}\nReasons: {', '.join(analysis['reasons'])}\nPatterns: {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}\nMTF Bias: {analysis['mtf_bias']}\nSL: {analysis['sl']} | TP: {analysis['tp']}\n\nAs a pro trader, give short, direct advice on this trade:\n1. Is this signal reliable? Why?\n2. What is the probability of next candle going as expected?\n3. Should we enter now or wait? (give specific price action triggers)\nMax 6 lines."
     try:
@@ -333,6 +395,9 @@ if st.button("🔄 Refresh Data & Backtest"):
     st.rerun()
 
 MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "USD/JPY": "USDJPY=X", "NAS100": "NQ=F"}
+
+# Initialize Neon DB on startup
+init_db()
 
 cols = st.columns(3)
 for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
@@ -379,6 +444,19 @@ if st.session_state.get("selected_symbol"):
         if len(df_lower) > 2:
             st.session_state.last_price_check[ticker] = float(df_lower['Close'].iloc[-1])
         
+        # ---- SAVE SIGNAL TO NEON (PERMANENT) ----
+        if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"]:
+            save_signal(
+                symbol=ticker,
+                signal=analysis['signal'],
+                entry=analysis['last_price'],
+                target=analysis['tp'],
+                sl=analysis['sl']
+            )
+        
+        # ---- UPDATE OLD SIGNALS (CHECK WIN/LOSS) ----
+        update_old_signals(ticker, analysis['last_price'])
+        
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 Price", f"{analysis['last_price']:,}")
         c2.metric("📊 Signal", analysis['signal'])
@@ -399,73 +477,4 @@ if st.session_state.get("selected_symbol"):
                 f"<div class='sr-box'><b>📌 Key Levels:</b> {sr_text}<br><b>Patterns:</b> {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}</div>",
                 unsafe_allow_html=True
             )
-        
-        # ---- SL/TP (SAFE - NO TRIPLE QUOTES) ----
-        st.markdown("### 🎯 Risk Management (ATR Based)")
-        st.info(
-            f"- **Stop Loss (SL):** {analysis['sl']} (1.5x ATR)\n"
-            f"- **Take Profit (TP):** {analysis['tp']} (2.5x ATR)\n"
-            f"- **Risk:Reward Ratio:** 1 : {analysis['rr_ratio']}"
-        )
-        
-        st.markdown("### 🕯️ Next Candle Prediction")
-        st.success(analysis['expected_candles'])
-        st.warning(analysis['pullback'])
-        
-        # ---- WAIT DETAILS (SAFE - NO TRIPLE QUOTES) ----
-        if analysis['signal'] == "WAIT":
-            sr = analysis.get('support', 0)
-            rr = analysis.get('resistance', 0)
-            if sr and rr:
-                mid = (sr + rr) / 2
-                st.markdown(
-                    f"<div class='backtest-box'><b>⏳ WAIT - Why?</b><br>"
-                    f"🔸 Market range mein hai.<br>"
-                    f"🔸 <b>Buy agar:</b> Price {rr:.2f} break kare (Resistance ke upar).<br>"
-                    f"🔸 <b>Sell agar:</b> Price {sr:.2f} break kare (Support ke neechay).<br>"
-                    f"🔸 Abhi mid-range ({mid:.2f}) mein hai, koi setup nahi.</div>",
-                    unsafe_allow_html=True
-                )
-        
-        # ---- BACKTEST ----
-        st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
-        mock_winrate = np.random.randint(55, 75)
-        st.progress(mock_winrate / 100, text=f"Win Rate (Estimated): {mock_winrate}%")
-        st.caption("⚠️ Accurate backtest ke liye database connect karna parega, yeh demo hai.")
-        
-        # ---- TECHNICAL REASONS ----
-        with st.expander("🧠 Technical Reasons (Score Breakup)"):
-            for r in analysis['reasons']:
-                st.write(f"- {r}")
-            st.caption(f"Total Score: {analysis['score']}")
-        
-        # ==================== GROK (AB YEH ADD HAI) ====================
-        st.markdown("### 🤖 Grok Text Analysis")
-        if st.button("Ask Grok", key="grok_main"):
-            with st.spinner("Grok soch raha hai..."):
-                resp = get_grok_analysis(name, tf_lower, analysis, analysis['last_price'])
-            st.markdown(
-                f"<div class='mtf-box' style='border-left-color: #4a90e2;'>{resp}</div>",
-                unsafe_allow_html=True
-            )
-        
-        # ==================== GEMINI (AB YEH ADD HAI) ====================
-        st.markdown("### 📸 Gemini Vision (Upload Chart Screenshot)")
-        st.write("Current candle ka screenshot upload karein taake Gemini next candle predict kare.")
-        uploaded = st.file_uploader(f"Upload {name} ({tf_lower}) chart image", type=["png", "jpg"], key="gemini_upload")
-        if uploaded:
-            img = Image.open(uploaded)
-            st.image(img, caption="Uploaded Chart", use_container_width=True)
-            if st.button("🔮 Predict Next Candle via Gemini", key="gemini_main"):
-                with st.spinner("Gemini analyzing chart..."):
-                    gem_res = analyze_chart_with_gemini(img, name, tf_lower)
-                st.markdown(
-                    f"<div class='sr-box' style='border-left-color: #00ff9f;'>{gem_res}</div>",
-                    unsafe_allow_html=True
-                )
-    else:
-        st.error("Insufficient data for analysis. Try larger timeframe.")
-else:
-    st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
-
-st.caption("⚡ Advanced System v2.0 | Multi-TF + Volume + S/R + Patterns + Dynamic Scoring")
+    
