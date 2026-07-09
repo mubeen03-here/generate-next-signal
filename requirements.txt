@@ -8,3 +8,5 @@ google-generativeai
 Pillow
 psycopg2-binary
 sqlalchemy
+alpha-vantage
+requests
