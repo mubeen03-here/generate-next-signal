@@ -114,7 +114,7 @@ def get_conn():
             return st.connection("neon", type="sql")
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(2)  # 2 second wait karo phir try karo
+                time.sleep(2)
                 continue
             else:
                 st.error(f"❌ Database connection failed after {max_retries} attempts: {str(e)}")
@@ -173,37 +173,78 @@ def save_signal(symbol, signal, entry, target, sl):
     except Exception as e:
         st.error(f"❌ Failed to save signal: {str(e)}")
 
-def update_old_signals(symbol, current_price):
+# ==================== IMPROVED UPDATE SIGNALS (HIGH/LOW CHECK) ====================
+def update_old_signals(symbol, df):
+    """
+    Ab yeh function candle ki High aur Low check karega, sirf Close nahi.
+    df = latest candles ka dataframe (jisme signal ke baad wali candle bhi ho)
+    """
     conn = get_conn()
     if conn is None:
         return
+    
+    # Pehle saare PENDING signals dhoondo
+    conn2 = get_conn()
+    if conn2 is None:
+        return
     try:
-        with conn.session as s:
+        with conn2.session as s:
             rows = s.execute(text("""
-                SELECT id, signal, target_price, stop_loss 
+                SELECT id, timestamp, signal, target_price, stop_loss 
                 FROM signal_history 
                 WHERE symbol = :sym AND status = 'PENDING'
             """), {"sym": symbol}).fetchall()
             
+            if not rows:
+                return
+            
+            # Har pending signal ke liye loop
             for row in rows:
-                id, sig, target, sl = row
+                signal_id, signal_time, sig, target, sl = row
+                
+                # Signal ke timestamp ke baad wali candle dhoondo
+                df['Datetime'] = pd.to_datetime(df['Datetime'])
+                signal_dt = pd.to_datetime(signal_time)
+                
+                # Signal ke baad wali candle filter karo
+                next_candles = df[df['Datetime'] > signal_dt]
+                
+                if next_candles.empty:
+                    continue  # Agar agli candle nahi aayi toh skip karo
+                
+                # Sab se pehli candle (jo signal ke turant baad aayi)
+                next_candle = next_candles.iloc[0]
+                candle_high = float(next_candle['High'])
+                candle_low = float(next_candle['Low'])
+                
                 result = None
+                
                 if "BUY" in sig:
-                    if current_price >= target:
+                    # Buy signal: Agar High ne Target touch kiya toh WIN
+                    if candle_high >= target:
                         result = "WIN"
-                    elif current_price <= sl:
+                    # Agar Low ne SL touch kiya toh LOSS
+                    elif candle_low <= sl:
                         result = "LOSS"
+                        
                 elif "SELL" in sig:
-                    if current_price <= target:
+                    # Sell signal: Agar Low ne Target touch kiya toh WIN
+                    if candle_low <= target:
                         result = "WIN"
-                    elif current_price >= sl:
+                    # Agar High ne SL touch kiya toh LOSS
+                    elif candle_high >= sl:
                         result = "LOSS"
+                
+                # Agar result mil gaya toh database update karo
                 if result:
-                    s.execute(text("UPDATE signal_history SET status='CLOSED', result=:res WHERE id=:id"), {
-                        "res": result,
-                        "id": id
-                    })
-            s.commit()
+                    with conn.session as s2:
+                        s2.execute(text("""
+                            UPDATE signal_history 
+                            SET status='CLOSED', result=:res 
+                            WHERE id=:id
+                        """), {"res": result, "id": signal_id})
+                        s2.commit()
+                        
     except Exception as e:
         st.error(f"❌ Failed to update signals: {str(e)}")
 
@@ -482,240 +523,4 @@ def calculate_advanced_signal(df, df_higher=None):
         signal, badge = "WAIT", "neutral"
 
     sl_price = price - (1.5 * atr) if "BUY" in signal else price + (1.5 * atr)
-    tp_price = price + (2.5 * atr) if "BUY" in signal else price - (2.5 * atr)
-    rr_ratio = round(2.5 / 1.5, 2)
-
-    if "BUY" in signal:
-        expected = f"🟢 Next candle likely BULLISH (Green). Target: {tp_price:.2f}"
-        pullback = f"📉 Small retrace to {price - (0.5*atr):.2f} possible before up move."
-    elif "SELL" in signal:
-        expected = f"🔴 Next candle likely BEARISH (Red). Target: {tp_price:.2f}"
-        pullback = f"📈 Small bounce to {price + (0.5*atr):.2f} possible before down move."
-    else:
-        expected = "⏳ Direction unclear. Better to WAIT for break of S/R."
-        pullback = "No active trade."
-        sl_price = price
-        tp_price = price
-
-    return {
-        "signal": signal, "badge_class": badge, "score": round(score, 2),
-        "reasons": reasons, "last_price": round(price, 2), "rsi": round(rsi, 1),
-        "atr": round(atr, 3), "sl": round(sl_price, 2), "tp": round(tp_price, 2),
-        "rr_ratio": rr_ratio, "expected_candles": expected, "pullback": pullback,
-        "patterns": patterns, "mtf_bias": "Bullish" if mtf_bias > 0 else "Bearish" if mtf_bias < 0 else "Neutral",
-        "support": signal_details.get('support', None), "resistance": signal_details.get('resistance', None)
-    }
-
-# ==================== GROK ====================
-def get_grok_analysis(symbol, tf, analysis, price):
-    prompt = f"Symbol: {symbol} | TF: {tf} | Price: {price}\nSignal: {analysis['signal']} | Score: {analysis['score']}\nReasons: {', '.join(analysis['reasons'])}\nPatterns: {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}\nMTF Bias: {analysis['mtf_bias']}\nSL: {analysis['sl']} | TP: {analysis['tp']}\n\nAs a pro trader, give short, direct advice on this trade:\n1. Is this signal reliable? Why?\n2. What is the probability of next candle going as expected?\n3. Should we enter now or wait? (give specific price action triggers)\nMax 6 lines."
-    try:
-        response = groq_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.4, max_tokens=250)
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Grok unavailable: {str(e)}"
-
-# ==================== GEMINI ====================
-def analyze_chart_with_gemini(image, symbol, tf):
-    if "GEMINI_API_KEY" not in st.secrets:
-        return "Gemini API key missing."
-    prompt = f"Analyze this chart for {symbol} on {tf} time frame. Tell me visually:\n1. Current forming candle direction?\n2. Next candle prediction (Bullish/Bearish) with % probability.\n3. Are we near Support or Resistance?\n4. Should we BUY, SELL, or WAIT?\nAnswer in 6 short bullet points."
-    models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash']
-    for m in models:
-        try:
-            model = genai.GenerativeModel(m)
-            res = model.generate_content([prompt, image])
-            if res and res.text:
-                return res.text
-        except:
-            continue
-    return "Gemini analysis failed."
-
-# ==================== UI ====================
-st.markdown('<h1 class="main-header">🚀 Pro Max Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"🇵🇰 {get_pakistan_time()} | Advanced MTF + Volume + S/R + Patterns + Backtest | Neon DB")
-
-if st.button("🔄 Refresh Data & Backtest"):
-    st.cache_data.clear()
-    st.rerun()
-
-MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "USD/JPY": "USDJPY=X", "NAS100": "NQ=F"}
-
-# ==================== INIT DATABASE ====================
-db_initialized = init_db()
-if db_initialized:
-    st.success("✅ Database connected successfully!")
-else:
-    st.warning("⚠️ Database connection failed. Check secrets configuration.")
-
-cols = st.columns(3)
-for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
-    with cols[idx]:
-        qdf = fetch_ohlcv(ticker, interval="60m", period="2d")
-        price, pct, sig = 0.0, 0.0, "NEUTRAL"
-        temp_analysis = None
-        if qdf is not None and len(qdf) > 1:
-            price = float(qdf['Close'].iloc[-1])
-            pct = ((price - float(qdf['Close'].iloc[0])) / float(qdf['Close'].iloc[0])) * 100
-            temp_analysis = calculate_advanced_signal(qdf, None)
-            if temp_analysis:
-                sig = temp_analysis['signal']
-        st.markdown(
-            f"<div class='symbol-card'><strong>{name}</strong><br><span class='metric-value'>{price:,.2f}</span> "
-            f"<span style='color:{'#00c853' if pct >= 0 else '#f44336'};'> {pct:+.2f}%</span><br>"
-            f"<span class='signal-badge {temp_analysis['badge_class'] if temp_analysis else 'neutral'}'>{sig}</span></div>",
-            unsafe_allow_html=True
-        )
-        if st.button(f"Analyze {name.split()[0]}", key=f"btn_{idx}"):
-            st.session_state.selected_symbol = ticker
-            st.session_state.selected_name = name
-            st.rerun()
-
-if st.session_state.get("selected_symbol"):
-    ticker = st.session_state.selected_symbol
-    name = st.session_state.get("selected_name", ticker)
-    st.divider()
-    st.subheader(f"📊 {name} ({ticker})")
-    st.caption(f"📡 Data Source: {st.session_state.data_source}")
-    
-    tf_lower = st.selectbox("Lower Timeframe (Entry)", ["5m", "15m", "30m"], index=1)
-    tf_higher = st.selectbox("Higher Timeframe (Trend)", ["1h", "4h"], index=0)
-    
-    df_lower = fetch_ohlcv(ticker, interval=tf_lower, period="3d")
-    df_higher = fetch_ohlcv(ticker, interval=tf_higher, period="5d")
-    
-    if df_lower is None or len(df_lower) < 30:
-        st.error("Data nahi aa raha. Kuch der baad refresh karein.")
-        st.stop()
-    
-    analysis = calculate_advanced_signal(df_lower, df_higher)
-    
-    if analysis:
-        if len(df_lower) > 2:
-            st.session_state.last_price_check[ticker] = float(df_lower['Close'].iloc[-1])
-        
-        # ---- SAVE SIGNAL & SEND ALERTS ----
-        if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
-            save_signal(
-                symbol=ticker,
-                signal=analysis['signal'],
-                entry=analysis['last_price'],
-                target=analysis['tp'],
-                sl=analysis['sl']
-            )
-            send_telegram_alert(
-                symbol=name,
-                signal=analysis['signal'],
-                price=analysis['last_price'],
-                tp=analysis['tp'],
-                sl=analysis['sl']
-            )
-            send_email_alert(
-                symbol=name,
-                signal=analysis['signal'],
-                price=analysis['last_price'],
-                tp=analysis['tp'],
-                sl=analysis['sl']
-            )
-            st.success("✅ Signal saved! Alerts sent to Telegram & Email.")
-        
-        # ---- UPDATE OLD SIGNALS ----
-        if db_initialized:
-            update_old_signals(ticker, analysis['last_price'])
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💰 Price", f"{analysis['last_price']:,}")
-        c2.metric("📊 Signal", analysis['signal'])
-        c3.metric("📈 RSI", analysis['rsi'])
-        c4.metric("⚡ ATR", analysis['atr'])
-        
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown(
-                f"<div class='mtf-box'><b>⏳ Multi-Timeframe Trend (Higher TF):</b> {analysis['mtf_bias']}<br><b>Score:</b> {analysis['score']} / 10</div>",
-                unsafe_allow_html=True
-            )
-        with col_b:
-            sr_text = f"S: {analysis['support']:.2f}" if analysis['support'] else "S: N/A"
-            sr_text += f" | R: {analysis['resistance']:.2f}" if analysis['resistance'] else "| R: N/A"
-            st.markdown(
-                f"<div class='sr-box'><b>📌 Key Levels:</b> {sr_text}<br><b>Patterns:</b> {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}</div>",
-                unsafe_allow_html=True
-            )
-        
-        st.markdown("### 🎯 Risk Management (ATR Based)")
-        st.info(
-            f"- **Stop Loss (SL):** {analysis['sl']} (1.5x ATR)\n"
-            f"- **Take Profit (TP):** {analysis['tp']} (2.5x ATR)\n"
-            f"- **Risk:Reward Ratio:** 1 : {analysis['rr_ratio']}"
-        )
-        
-        st.markdown("### 🕯️ Next Candle Prediction")
-        st.success(analysis['expected_candles'])
-        st.warning(analysis['pullback'])
-        
-        if analysis['signal'] == "WAIT":
-            sr = analysis.get('support', 0)
-            rr = analysis.get('resistance', 0)
-            if sr and rr:
-                mid = (sr + rr) / 2
-                st.markdown(
-                    f"<div class='backtest-box'><b>⏳ WAIT - Why?</b><br>"
-                    f"🔸 Market range mein hai.<br>"
-                    f"🔸 <b>Buy agar:</b> Price {rr:.2f} break kare (Resistance ke upar).<br>"
-                    f"🔸 <b>Sell agar:</b> Price {sr:.2f} break kare (Support ke neechay).<br>"
-                    f"🔸 Abhi mid-range ({mid:.2f}) mein hai, koi setup nahi.</div>",
-                    unsafe_allow_html=True
-                )
-        
-        # ---- REAL BACKTEST STATS ----
-        st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
-        if db_initialized:
-            winrate, total = get_stats(ticker)
-            if winrate is not None:
-                st.progress(winrate / 100, text=f"Win Rate (Last {total} signals): {winrate}%")
-                if winrate >= 60:
-                    st.success("✅ System consistent perform kar raha hai!")
-                else:
-                    st.warning("⚠️ System ko optimize karne ki zaroorat hai.")
-            else:
-                st.info("📭 Abhi koi closed signal nahi. Pehle kuch trades complete hone dein.")
-        else:
-            st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
-        st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)")
-        
-        with st.expander("🧠 Technical Reasons (Score Breakup)"):
-            for r in analysis['reasons']:
-                st.write(f"- {r}")
-            st.caption(f"Total Score: {analysis['score']}")
-        
-        # ---- GROK ----
-        st.markdown("### 🤖 Grok Text Analysis")
-        if st.button("Ask Grok", key="grok_main"):
-            with st.spinner("Grok soch raha hai..."):
-                resp = get_grok_analysis(name, tf_lower, analysis, analysis['last_price'])
-            st.markdown(
-                f"<div class='mtf-box' style='border-left-color: #4a90e2;'>{resp}</div>",
-                unsafe_allow_html=True
-            )
-        
-        # ---- GEMINI ----
-        st.markdown("### 📸 Gemini Vision (Upload Chart Screenshot)")
-        st.write("Current candle ka screenshot upload karein taake Gemini next candle predict kare.")
-        uploaded = st.file_uploader(f"Upload {name} ({tf_lower}) chart image", type=["png", "jpg"], key="gemini_upload")
-        if uploaded:
-            img = Image.open(uploaded)
-            st.image(img, caption="Uploaded Chart", use_container_width=True)
-            if st.button("🔮 Predict Next Candle via Gemini", key="gemini_main"):
-                with st.spinner("Gemini analyzing chart..."):
-                    gem_res = analyze_chart_with_gemini(img, name, tf_lower)
-                st.markdown(
-                    f"<div class='sr-box' style='border-left-color: #00ff9f;'>{gem_res}</div>",
-                    unsafe_allow_html=True
-                )
-    else:
-        st.error("Insufficient data for analysis. Try larger timeframe.")
-else:
-    st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
-
-st.caption("⚡ Advanced System v3.0 | Multi-TF + Failover + Telegram + Email | Neon DB (Permanent) | Retry Enabled")
+    tp_price = price + (2.5 * atr) if "BUY" in signal else pric
