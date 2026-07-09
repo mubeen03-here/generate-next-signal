@@ -7,6 +7,7 @@ import pytz
 from groq import Groq
 import google.generativeai as genai
 from PIL import Image
+from sqlalchemy import text  # <--- YEH NAYA IMPORT HAI (Bohat Zaroori)
 import time
 
 # ==================== API KEYS SETUP ====================
@@ -52,14 +53,15 @@ def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
 
-# ==================== NEON DATABASE FUNCTIONS (PERMANENT) ====================
+# ==================== NEON DATABASE FUNCTIONS (FIXED - AB SAHI CHALEGA) ====================
 def get_conn():
     return st.connection("neon", type="sql")
 
 def init_db():
     conn = get_conn()
     with conn.session as s:
-        s.execute("""
+        # YAHAN text() WRAP KARNA BOHT ZAROORI HAI
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS signal_history (
                 id SERIAL PRIMARY KEY,
                 timestamp TEXT,
@@ -71,27 +73,35 @@ def init_db():
                 status TEXT DEFAULT 'PENDING',
                 result TEXT
             )
-        """)
+        """))
         s.commit()
 
 def save_signal(symbol, signal, entry, target, sl):
     conn = get_conn()
     with conn.session as s:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        s.execute("""
+        # YAHAN text() WRAP KARO AUR :placeholder (named parameters) USE KARO
+        s.execute(text("""
             INSERT INTO signal_history (timestamp, symbol, signal, entry_price, target_price, stop_loss)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (now, symbol, signal, entry, target, sl))
+            VALUES (:ts, :sym, :sig, :entry, :target, :sl)
+        """), {
+            "ts": now,
+            "sym": symbol,
+            "sig": signal,
+            "entry": entry,
+            "target": target,
+            "sl": sl
+        })
         s.commit()
 
 def update_old_signals(symbol, current_price):
     conn = get_conn()
     with conn.session as s:
-        rows = s.execute("""
+        rows = s.execute(text("""
             SELECT id, signal, target_price, stop_loss 
             FROM signal_history 
-            WHERE symbol=%s AND status='PENDING'
-        """, (symbol,)).fetchall()
+            WHERE symbol = :sym AND status = 'PENDING'
+        """), {"sym": symbol}).fetchall()
         
         for row in rows:
             id, sig, target, sl = row
@@ -107,11 +117,15 @@ def update_old_signals(symbol, current_price):
                 elif current_price >= sl:
                     result = "LOSS"
             if result:
-                s.execute("UPDATE signal_history SET status='CLOSED', result=%s WHERE id=%s", (result, id))
+                s.execute(text("UPDATE signal_history SET status='CLOSED', result=:res WHERE id=:id"), {
+                    "res": result,
+                    "id": id
+                })
         s.commit()
 
 def get_stats(symbol):
     conn = get_conn()
+    # conn.query bilkul sahi kaam karta hai, isko change karne ki zaroorat nahi
     df = conn.query(
         f"SELECT * FROM signal_history WHERE symbol='{symbol}' AND status='CLOSED' ORDER BY timestamp DESC LIMIT 10",
         ttl="5s"
@@ -388,7 +402,7 @@ def analyze_chart_with_gemini(image, symbol, tf):
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">🚀 Pro Max Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"🇵🇰 {get_pakistan_time()} | Advanced MTF + Volume + S/R + Patterns + Backtest")
+st.caption(f"🇵🇰 {get_pakistan_time()} | Advanced MTF + Volume + S/R + Patterns + Backtest | Neon DB")
 
 if st.button("🔄 Refresh Data & Backtest"):
     st.cache_data.clear()
@@ -467,14 +481,4 @@ if st.session_state.get("selected_symbol"):
         with col_a:
             st.markdown(
                 f"<div class='mtf-box'><b>⏳ Multi-Timeframe Trend (Higher TF):</b> {analysis['mtf_bias']}<br>"
-                f"<b>Score:</b> {analysis['score']} / 10</div>",
-                unsafe_allow_html=True
-            )
-        with col_b:
-            sr_text = f"S: {analysis['support']:.2f}" if analysis['support'] else "S: N/A"
-            sr_text += f" | R: {analysis['resistance']:.2f}" if analysis['resistance'] else "| R: N/A"
-            st.markdown(
-                f"<div class='sr-box'><b>📌 Key Levels:</b> {sr_text}<br><b>Patterns:</b> {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}</div>",
-                unsafe_allow_html=True
-            )
-    
+                f"<b>Scor
