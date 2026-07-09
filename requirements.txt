@@ -1,0 +1,8 @@
+streamlit
+yfinance
+pandas
+numpy
+pytz
+groq
+google-generativeai
+Pillow
