@@ -338,10 +338,6 @@ def calculate_advanced_signal(df, df_higher=None):
         sl_price = price
         tp_price = price
     
-    # -------- SAVE FOR BACKTESTING (Store predicted direction) --------
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-    # We'll save in main loop later
-    
     return {
         "signal": signal,
         "badge_class": badge,
@@ -433,6 +429,7 @@ for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
         # Quick preview
         qdf = fetch_ohlcv(ticker, interval="60m", period="2d")
         price, pct, sig = 0.0, 0.0, "NEUTRAL"
+        temp_analysis = None
         if qdf is not None and len(qdf) > 1:
             price = float(qdf['Close'].iloc[-1])
             pct = ((price - float(qdf['Close'].iloc[0])) / float(qdf['Close'].iloc[0])) * 100
@@ -508,4 +505,7 @@ if st.session_state.get("selected_symbol"):
             </div>
             """, unsafe_allow_html=True)
         
-        # ---- ACTIVE S
+        # ---- ACTIVE SL/TP ----
+        st.markdown("### 🎯 Risk Management (ATR Based)")
+        st.info(f"""
+        - **Stop Loss (SL):** {analysis['sl']} (1.5x ATR)
