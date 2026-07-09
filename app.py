@@ -40,6 +40,7 @@ st.markdown("""
     .mtf-box { background-color: #1a2332; border-left: 5px solid #00b8ff; padding: 10px; border-radius: 8px; }
     .sr-box { background-color: #2a1a2e; border-left: 5px solid #ff9800; padding: 10px; border-radius: 8px; }
     .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 10px; border-radius: 8px; }
+    .error-box { background-color: #3d1a1a; border: 1px solid #ff4444; padding: 10px; border-radius: 8px; color: #ff6666; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -53,84 +54,111 @@ def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
 
-# ==================== NEON DATABASE FUNCTIONS (FIXED) ====================
+# ==================== NEON DATABASE FUNCTIONS (WITH ERROR HANDLING) ====================
 def get_conn():
-    return st.connection("neon", type="sql")
+    try:
+        return st.connection("neon", type="sql")
+    except Exception as e:
+        st.error(f"❌ Database connection failed: {str(e)}")
+        return None
 
 def init_db():
     conn = get_conn()
-    with conn.session as s:
-        s.execute(text("""
-            CREATE TABLE IF NOT EXISTS signal_history (
-                id SERIAL PRIMARY KEY,
-                timestamp TEXT,
-                symbol TEXT,
-                signal TEXT,
-                entry_price REAL,
-                target_price REAL,
-                stop_loss REAL,
-                status TEXT DEFAULT 'PENDING',
-                result TEXT
-            )
-        """))
-        s.commit()
+    if conn is None:
+        return False
+    try:
+        with conn.session as s:
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS signal_history (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TEXT,
+                    symbol TEXT,
+                    signal TEXT,
+                    entry_price REAL,
+                    target_price REAL,
+                    stop_loss REAL,
+                    status TEXT DEFAULT 'PENDING',
+                    result TEXT
+                )
+            """))
+            s.commit()
+            return True
+    except Exception as e:
+        st.error(f"❌ Failed to create table: {str(e)}")
+        return False
 
 def save_signal(symbol, signal, entry, target, sl):
     conn = get_conn()
-    with conn.session as s:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        s.execute(text("""
-            INSERT INTO signal_history (timestamp, symbol, signal, entry_price, target_price, stop_loss)
-            VALUES (:ts, :sym, :sig, :entry, :target, :sl)
-        """), {
-            "ts": now,
-            "sym": symbol,
-            "sig": signal,
-            "entry": entry,
-            "target": target,
-            "sl": sl
-        })
-        s.commit()
+    if conn is None:
+        return
+    try:
+        with conn.session as s:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            s.execute(text("""
+                INSERT INTO signal_history (timestamp, symbol, signal, entry_price, target_price, stop_loss)
+                VALUES (:ts, :sym, :sig, :entry, :target, :sl)
+            """), {
+                "ts": now,
+                "sym": symbol,
+                "sig": signal,
+                "entry": entry,
+                "target": target,
+                "sl": sl
+            })
+            s.commit()
+    except Exception as e:
+        st.error(f"❌ Failed to save signal: {str(e)}")
 
 def update_old_signals(symbol, current_price):
     conn = get_conn()
-    with conn.session as s:
-        rows = s.execute(text("""
-            SELECT id, signal, target_price, stop_loss 
-            FROM signal_history 
-            WHERE symbol = :sym AND status = 'PENDING'
-        """), {"sym": symbol}).fetchall()
-        
-        for row in rows:
-            id, sig, target, sl = row
-            result = None
-            if "BUY" in sig:
-                if current_price >= target:
-                    result = "WIN"
-                elif current_price <= sl:
-                    result = "LOSS"
-            elif "SELL" in sig:
-                if current_price <= target:
-                    result = "WIN"
-                elif current_price >= sl:
-                    result = "LOSS"
-            if result:
-                s.execute(text("UPDATE signal_history SET status='CLOSED', result=:res WHERE id=:id"), {
-                    "res": result,
-                    "id": id
-                })
-        s.commit()
+    if conn is None:
+        return
+    try:
+        with conn.session as s:
+            rows = s.execute(text("""
+                SELECT id, signal, target_price, stop_loss 
+                FROM signal_history 
+                WHERE symbol = :sym AND status = 'PENDING'
+            """), {"sym": symbol}).fetchall()
+            
+            for row in rows:
+                id, sig, target, sl = row
+                result = None
+                if "BUY" in sig:
+                    if current_price >= target:
+                        result = "WIN"
+                    elif current_price <= sl:
+                        result = "LOSS"
+                elif "SELL" in sig:
+                    if current_price <= target:
+                        result = "WIN"
+                    elif current_price >= sl:
+                        result = "LOSS"
+                if result:
+                    s.execute(text("UPDATE signal_history SET status='CLOSED', result=:res WHERE id=:id"), {
+                        "res": result,
+                        "id": id
+                    })
+            s.commit()
+    except Exception as e:
+        st.error(f"❌ Failed to update signals: {str(e)}")
 
 def get_stats(symbol):
     conn = get_conn()
-    df = conn.query(
-        f"SELECT * FROM signal_history WHERE symbol='{symbol}' AND status='CLOSED' ORDER BY timestamp DESC LIMIT 10",
-        ttl="5s"
-    )
-    if len(df) == 0:
+    if conn is None:
         return None, 0
-    wins = len(df[df['result'] == 'WIN'])
-    return round((wins / len(df)) * 100), len(df)
+    try:
+        df = conn.query(
+            f"SELECT * FROM signal_history WHERE symbol='{symbol}' AND status='CLOSED' ORDER BY timestamp DESC LIMIT 10",
+            ttl="5s"
+        )
+        if len(df) == 0:
+            return None, 0
+        wins = len(df[df['result'] == 'WIN'])
+        return round((wins / len(df)) * 100), len(df)
+    except Exception as e:
+        st.error(f"❌ Failed to get stats: {str(e)}")
+        return None, 0
 
 # ==================== DATA FETCH ====================
 @st.cache_data(ttl=40, show_spinner=False)
@@ -162,7 +190,7 @@ def fetch_ohlcv(ticker, interval="15m", period="5d"):
         if 'Volume' not in df.columns:
             df['Volume'] = 1000
         return df[['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-    except:
+    except Exception as e:
         return None
 
 def find_sr_levels(df, lookback=30):
@@ -379,8 +407,8 @@ def get_grok_analysis(symbol, tf, analysis, price):
     try:
         response = groq_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.4, max_tokens=250)
         return response.choices[0].message.content.strip()
-    except:
-        return "Grok unavailable right now."
+    except Exception as e:
+        return f"Grok unavailable: {str(e)}"
 
 def analyze_chart_with_gemini(image, symbol, tf):
     if "GEMINI_API_KEY" not in st.secrets:
@@ -407,8 +435,12 @@ if st.button("🔄 Refresh Data & Backtest"):
 
 MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "USD/JPY": "USDJPY=X", "NAS100": "NQ=F"}
 
-# Initialize Neon DB on startup
-init_db()
+# ==================== INIT DATABASE (WITH ERROR HANDLING) ====================
+db_initialized = init_db()
+if db_initialized:
+    st.success("✅ Database connected successfully!")
+else:
+    st.warning("⚠️ Database connection failed. Check secrets configuration. App will run with limited functionality.")
 
 cols = st.columns(3)
 for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
@@ -456,7 +488,7 @@ if st.session_state.get("selected_symbol"):
             st.session_state.last_price_check[ticker] = float(df_lower['Close'].iloc[-1])
         
         # ---- SAVE SIGNAL TO NEON ----
-        if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"]:
+        if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             save_signal(
                 symbol=ticker,
                 signal=analysis['signal'],
@@ -466,7 +498,8 @@ if st.session_state.get("selected_symbol"):
             )
         
         # ---- UPDATE OLD SIGNALS ----
-        update_old_signals(ticker, analysis['last_price'])
+        if db_initialized:
+            update_old_signals(ticker, analysis['last_price'])
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 Price", f"{analysis['last_price']:,}")
@@ -483,4 +516,84 @@ if st.session_state.get("selected_symbol"):
         with col_b:
             sr_text = f"S: {analysis['support']:.2f}" if analysis['support'] else "S: N/A"
             sr_text += f" | R: {analysis['resistance']:.2f}" if analysis['resistance'] else "| R: N/A"
-            s
+            st.markdown(
+                f"<div class='sr-box'><b>📌 Key Levels:</b> {sr_text}<br><b>Patterns:</b> {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}</div>",
+                unsafe_allow_html=True
+            )
+        
+        st.markdown("### 🎯 Risk Management (ATR Based)")
+        st.info(
+            f"- **Stop Loss (SL):** {analysis['sl']} (1.5x ATR)\n"
+            f"- **Take Profit (TP):** {analysis['tp']} (2.5x ATR)\n"
+            f"- **Risk:Reward Ratio:** 1 : {analysis['rr_ratio']}"
+        )
+        
+        st.markdown("### 🕯️ Next Candle Prediction")
+        st.success(analysis['expected_candles'])
+        st.warning(analysis['pullback'])
+        
+        if analysis['signal'] == "WAIT":
+            sr = analysis.get('support', 0)
+            rr = analysis.get('resistance', 0)
+            if sr and rr:
+                mid = (sr + rr) / 2
+                st.markdown(
+                    f"<div class='backtest-box'><b>⏳ WAIT - Why?</b><br>"
+                    f"🔸 Market range mein hai.<br>"
+                    f"🔸 <b>Buy agar:</b> Price {rr:.2f} break kare (Resistance ke upar).<br>"
+                    f"🔸 <b>Sell agar:</b> Price {sr:.2f} break kare (Support ke neechay).<br>"
+                    f"🔸 Abhi mid-range ({mid:.2f}) mein hai, koi setup nahi.</div>",
+                    unsafe_allow_html=True
+                )
+        
+        # ---- REAL BACKTEST STATS ----
+        st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
+        if db_initialized:
+            winrate, total = get_stats(ticker)
+            if winrate is not None:
+                st.progress(winrate / 100, text=f"Win Rate (Last {total} signals): {winrate}%")
+                if winrate >= 60:
+                    st.success("✅ System consistent perform kar raha hai!")
+                else:
+                    st.warning("⚠️ System ko optimize karne ki zaroorat hai.")
+            else:
+                st.info("📭 Abhi koi closed signal nahi. Pehle kuch trades complete hone dein.")
+        else:
+            st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
+        st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)" if db_initialized else "⚠️ Database not connected")
+        
+        with st.expander("🧠 Technical Reasons (Score Breakup)"):
+            for r in analysis['reasons']:
+                st.write(f"- {r}")
+            st.caption(f"Total Score: {analysis['score']}")
+        
+        # ---- GROK ----
+        st.markdown("### 🤖 Grok Text Analysis")
+        if st.button("Ask Grok", key="grok_main"):
+            with st.spinner("Grok soch raha hai..."):
+                resp = get_grok_analysis(name, tf_lower, analysis, analysis['last_price'])
+            st.markdown(
+                f"<div class='mtf-box' style='border-left-color: #4a90e2;'>{resp}</div>",
+                unsafe_allow_html=True
+            )
+        
+        # ---- GEMINI ----
+        st.markdown("### 📸 Gemini Vision (Upload Chart Screenshot)")
+        st.write("Current candle ka screenshot upload karein taake Gemini next candle predict kare.")
+        uploaded = st.file_uploader(f"Upload {name} ({tf_lower}) chart image", type=["png", "jpg"], key="gemini_upload")
+        if uploaded:
+            img = Image.open(uploaded)
+            st.image(img, caption="Uploaded Chart", use_container_width=True)
+            if st.button("🔮 Predict Next Candle via Gemini", key="gemini_main"):
+                with st.spinner("Gemini analyzing chart..."):
+                    gem_res = analyze_chart_with_gemini(img, name, tf_lower)
+                st.markdown(
+                    f"<div class='sr-box' style='border-left-color: #00ff9f;'>{gem_res}</div>",
+                    unsafe_allow_html=True
+                )
+    else:
+        st.error("Insufficient data for analysis. Try larger timeframe.")
+else:
+    st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
+
+st.caption("⚡ Advanced System v2.0 | Multi-TF + Volume + S/R + Patterns + Dynamic Scoring | Neon DB (Permanent)")
