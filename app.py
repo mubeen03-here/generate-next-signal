@@ -34,29 +34,87 @@ st.set_page_config(page_title="Pro Max Trading Signals", layout="wide", initial_
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #fafafa; }
-    .main-header { font-size: 2rem; font-weight: 700; background: linear-gradient(90deg, #00ff9f, #00b8ff);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .symbol-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 0.7rem; }
-    .symbol-card strong { font-size: 0.9rem; }
-    .signal-badge { padding: 0.2rem 0.6rem; border-radius: 16px; font-weight: 700; font-size: 0.75rem; display: inline-block; }
+    .main-header { 
+        font-size: 1.3rem; 
+        font-weight: 700; 
+        background: linear-gradient(90deg, #00ff9f, #00b8ff);
+        -webkit-background-clip: text; 
+        -webkit-text-fill-color: transparent; 
+        display: inline-block;
+        margin: 0;
+        padding: 0;
+    }
+    .symbol-card { 
+        background-color: #161b22; 
+        border: 1px solid #30363d; 
+        border-radius: 8px; 
+        padding: 0.4rem 0.6rem; 
+        margin: 0.2rem 0;
+    }
+    .symbol-card strong { font-size: 0.8rem; }
+    .symbol-card .metric-value { font-size: 1rem; font-weight: 700; }
+    .signal-badge { 
+        padding: 0.1rem 0.5rem; 
+        border-radius: 12px; 
+        font-weight: 700; 
+        font-size: 0.65rem; 
+        display: inline-block; 
+    }
     .strong-buy { background-color: #00c853; color: white; }
     .buy { background-color: #4caf50; color: white; }
     .neutral { background-color: #ff9800; color: white; }
     .sell { background-color: #f44336; color: white; }
     .strong-sell { background-color: #d32f2f; color: white; }
-    .metric-value { font-size: 1.2rem; font-weight: 700; }
-    .mtf-box { background-color: #1a2332; border-left: 4px solid #00b8ff; padding: 8px; border-radius: 6px; font-size: 0.85rem; }
-    .sr-box { background-color: #2a1a2e; border-left: 4px solid #ff9800; padding: 8px; border-radius: 6px; font-size: 0.85rem; }
-    .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 8px; border-radius: 6px; font-size: 0.85rem; }
-    .candle-status { background-color: #1a1a2e; border-left: 4px solid #ffaa00; padding: 6px 12px; border-radius: 6px; display: inline-block; font-size: 0.85rem; }
-    .smc-box { background-color: #1a1a3e; border-left: 4px solid #8866ff; padding: 8px; border-radius: 6px; margin: 4px 0; font-size: 0.85rem; }
-    .whale-box { background-color: #1a1a2a; border-left: 4px solid #ffaa44; padding: 8px; border-radius: 6px; margin: 4px 0; font-size: 0.85rem; }
-    .kpi-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 0.5rem; text-align: center; }
-    .kpi-icon { font-size: 1.2rem; }
-    .kpi-value { font-size: 1.1rem; font-weight: 700; }
-    .kpi-label { color: #888; font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.5px; }
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
-    .stTabs [data-baseweb="tab"] { padding: 4px 12px; font-size: 0.8rem; }
+    .mtf-box { background-color: #1a2332; border-left: 3px solid #00b8ff; padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; margin: 2px 0; }
+    .sr-box { background-color: #2a1a2e; border-left: 3px solid #ff9800; padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; margin: 2px 0; }
+    .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; }
+    .candle-status { background-color: #1a1a2e; border-left: 3px solid #ffaa00; padding: 4px 10px; border-radius: 4px; display: inline-block; font-size: 0.8rem; }
+    .smc-box { background-color: #1a1a3e; border-left: 3px solid #8866ff; padding: 6px 10px; border-radius: 4px; margin: 3px 0; font-size: 0.8rem; }
+    .whale-box { background-color: #1a1a2a; border-left: 3px solid #ffaa44; padding: 6px 10px; border-radius: 4px; margin: 3px 0; font-size: 0.8rem; }
+    
+    /* KPI Cards - Clean, no extra background */
+    .kpi-card { 
+        background-color: transparent; 
+        padding: 0.3rem 0.2rem; 
+        text-align: center; 
+        border-radius: 0;
+    }
+    .kpi-icon { font-size: 1rem; display: inline-block; }
+    .kpi-value { font-size: 1rem; font-weight: 700; }
+    .kpi-label { color: #666; font-size: 0.55rem; text-transform: uppercase; letter-spacing: 0.5px; }
+    
+    /* Button row - clean parallel style */
+    .btn-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        padding: 0;
+        margin: 0;
+    }
+    .btn-row .stButton {
+        margin: 0;
+        padding: 0;
+    }
+    
+    .stTabs [data-baseweb="tab-list"] { gap: 2px; }
+    .stTabs [data-baseweb="tab"] { padding: 2px 10px; font-size: 0.75rem; }
+    
+    /* Fix for extra background */
+    div[data-testid="stVerticalBlock"] {
+        gap: 0.2rem;
+    }
+    div[data-testid="stHorizontalBlock"] {
+        gap: 0.2rem;
+    }
+    .stMarkdown {
+        margin: 0;
+        padding: 0;
+    }
+    .element-container {
+        margin: 0;
+        padding: 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -148,7 +206,6 @@ def init_db():
     for attempt in range(max_retries):
         try:
             with conn.session as s:
-                # Create table if not exists
                 s.execute(text("""
                     CREATE TABLE IF NOT EXISTS signal_history (
                         id SERIAL PRIMARY KEY,
@@ -164,12 +221,11 @@ def init_db():
                 """))
                 s.commit()
                 
-                # Check if alert_sent column exists, if not add it
                 try:
                     s.execute(text("ALTER TABLE signal_history ADD COLUMN alert_sent BOOLEAN DEFAULT FALSE"))
                     s.commit()
                 except Exception:
-                    pass  # Column already exists
+                    pass
                 
                 return True
         except Exception as e:
@@ -973,11 +1029,17 @@ def analyze_chart_with_gemini(image, symbol, tf):
     return "Gemini analysis failed."
 
 # ==================== UI ====================
-st.markdown('<h1 class="main-header">🚀 Pro Max Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"🇵🇰 {get_pakistan_time()} | SMC + News + Whale Tracker | Neon DB")
+# ---- HEADER - SMALL, LEFT ALIGNED ----
+col_header, col_spacer = st.columns([1, 5])
+with col_header:
+    st.markdown('<span class="main-header">🚀 Pro Max Trading Signals</span>', unsafe_allow_html=True)
 
-col1, col2 = st.columns([1, 1])
-with col1:
+# ---- TIME & STATUS ----
+st.caption(f"📅 {get_pakistan_time()} | SMC + News + Whale Tracker | Neon DB")
+
+# ---- BUTTONS - PARALLEL STYLE ----
+btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 4])
+with btn_col1:
     if st.session_state.alerts_enabled:
         if st.button("🔔 Alerts: ON", key="alert_toggle", help="Click to turn OFF alerts"):
             st.session_state.alerts_enabled = False
@@ -986,12 +1048,12 @@ with col1:
         if st.button("🔕 Alerts: OFF", key="alert_toggle", help="Click to turn ON alerts"):
             st.session_state.alerts_enabled = True
             st.rerun()
-
-with col2:
+with btn_col2:
     if st.button("🔄 Refresh Data", key="refresh_btn"):
         st.cache_data.clear()
         st.rerun()
 
+# ---- SYMBOLS ----
 MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "USD/JPY": "USDJPY=X", "NAS100": "NQ=F"}
 
 db_initialized = init_db()
@@ -1023,6 +1085,7 @@ for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
             st.session_state.selected_name = name
             st.rerun()
 
+# ==================== DETAILED VIEW ====================
 if st.session_state.get("selected_symbol"):
     ticker = st.session_state.selected_symbol
     name = st.session_state.get("selected_name", ticker)
@@ -1057,10 +1120,9 @@ if st.session_state.get("selected_symbol"):
         if db_initialized:
             update_old_signals(ticker, df_lower)
         
-        # ---- SEND ALERTS (ONLY IF NOT SENT BEFORE) ----
+        # ---- SEND ALERTS ----
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             if st.session_state.alerts_enabled:
-                # Check if already sent
                 already_sent = check_alert_sent(ticker, analysis['signal'], analysis['last_price'])
                 
                 if not already_sent:
@@ -1088,41 +1150,41 @@ if st.session_state.get("selected_symbol"):
             else:
                 st.info("🔕 Alerts are OFF. Signal saved in DB only.")
         
-        # ==================== KPI CARDS ====================
+        # ==================== KPI CARDS (CLEAN, NO EXTRA BG) ====================
         st.markdown("### 📊 Key Metrics")
         kpi_cols = st.columns(5)
         with kpi_cols[0]:
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-icon">💰</div>
-                <div class="kpi-value">{analysis['last_price']:,.2f}</div>
-                <div class="kpi-label">Price</div>
+                <span class="kpi-icon">💰</span>
+                <span class="kpi-value">{analysis['last_price']:,.2f}</span>
+                <div class="kpi-label">PRICE</div>
             </div>
             """, unsafe_allow_html=True)
         with kpi_cols[1]:
             badge_color = "#00c853" if "BUY" in analysis['signal'] else "#f44336" if "SELL" in analysis['signal'] else "#ff9800"
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-icon">📊</div>
-                <div class="kpi-value" style="color:{badge_color}">{analysis['signal']}</div>
-                <div class="kpi-label">Signal</div>
+                <span class="kpi-icon">📊</span>
+                <span class="kpi-value" style="color:{badge_color}">{analysis['signal']}</span>
+                <div class="kpi-label">SIGNAL</div>
             </div>
             """, unsafe_allow_html=True)
         with kpi_cols[2]:
             rsi_color = "#00c853" if analysis['rsi'] < 30 else "#f44336" if analysis['rsi'] > 70 else "#ff9800"
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-icon">📈</div>
-                <div class="kpi-value" style="color:{rsi_color}">{analysis['rsi']}</div>
+                <span class="kpi-icon">📈</span>
+                <span class="kpi-value" style="color:{rsi_color}">{analysis['rsi']}</span>
                 <div class="kpi-label">RSI</div>
             </div>
             """, unsafe_allow_html=True)
         with kpi_cols[3]:
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-icon">⚡</div>
-                <div class="kpi-value">{analysis['score']}</div>
-                <div class="kpi-label">Score</div>
+                <span class="kpi-icon">⚡</span>
+                <span class="kpi-value">{analysis['score']}</span>
+                <div class="kpi-label">SCORE</div>
             </div>
             """, unsafe_allow_html=True)
         with kpi_cols[4]:
@@ -1130,9 +1192,9 @@ if st.session_state.get("selected_symbol"):
             wr = f"{winrate}%" if winrate is not None else "N/A"
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-icon">🏆</div>
-                <div class="kpi-value">{wr}</div>
-                <div class="kpi-label">Win Rate</div>
+                <span class="kpi-icon">🏆</span>
+                <span class="kpi-value">{wr}</span>
+                <div class="kpi-label">WIN RATE</div>
             </div>
             """, unsafe_allow_html=True)
 
