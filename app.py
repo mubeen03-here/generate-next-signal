@@ -401,7 +401,7 @@ def fetch_news_sentiment(symbol):
     Finnhub se news le kar Grok ke zariye sentiment nikaalna
     """
     if "FINNHUB_API_KEY" not in st.secrets:
-        return "Neutral", "API Key Missing"
+        return "Neutral", ["API Key Missing"], "No News"
     
     try:
         # Symbol mapping for Finnhub
@@ -418,11 +418,11 @@ def fetch_news_sentiment(symbol):
         response = requests.get(url, timeout=10)
         
         if response.status_code != 200:
-            return "Neutral", "No News"
+            return "Neutral", ["No News"], "No News"
         
         news_data = response.json()
         if not news_data:
-            return "Neutral", "No News"
+            return "Neutral", ["No News"], "No News"
         
         # Top 5 headlines
         headlines = [item['headline'] for item in news_data[:5]]
@@ -444,14 +444,14 @@ def fetch_news_sentiment(symbol):
         result = response.choices[0].message.content.strip()
         
         if "Bullish" in result:
-            return "Bullish", headlines
+            return "Bullish", headlines, headlines_text
         elif "Bearish" in result:
-            return "Bearish", headlines
+            return "Bearish", headlines, headlines_text
         else:
-            return "Neutral", headlines
+            return "Neutral", headlines, headlines_text
             
     except Exception as e:
-        return "Neutral", f"Error: {str(e)}"
+        return "Neutral", [f"Error: {str(e)}"], "No News"
 
 # ==================== CANDLE STATUS ====================
 def get_candle_status(df):
@@ -665,9 +665,10 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
 
     # ==================== NEWS SENTIMENT SCORE ====================
     if symbol:
-        news_sentiment, news_headlines = fetch_news_sentiment(symbol)
+        news_sentiment, news_headlines, news_text = fetch_news_sentiment(symbol)
         signal_details['news_sentiment'] = news_sentiment
         signal_details['news_headlines'] = news_headlines
+        signal_details['news_text'] = news_text
         
         if news_sentiment == "Bullish":
             score += 1
@@ -679,7 +680,8 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
             reasons.append(f"📰 News Sentiment: Neutral")
     else:
         signal_details['news_sentiment'] = 'Neutral'
-        signal_details['news_headlines'] = 'No Symbol'
+        signal_details['news_headlines'] = ['No Symbol']
+        signal_details['news_text'] = 'No Symbol'
 
     # ==================== MTF TREND ====================
     if df_higher is not None and len(df_higher) > 20:
@@ -810,7 +812,8 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         "order_block_low": signal_details.get('order_block_low', None),
         "order_block_signal": signal_details.get('order_block_signal', None),
         "news_sentiment": signal_details.get('news_sentiment', 'Neutral'),
-        "news_headlines": signal_details.get('news_headlines', 'No News')
+        "news_headlines": signal_details.get('news_headlines', ['No News']),
+        "news_text": signal_details.get('news_text', 'No News')
     }
 
 # ==================== GROK & GEMINI ====================
@@ -1007,12 +1010,10 @@ if st.session_state.get("selected_symbol"):
             else:
                 st.info(f"⚪ {sentiment}")
         with col2:
-            headlines = analysis.get('news_headlines', '')
-            if headlines and headlines != "No News" and not headlines.startswith("Error") and headlines != "No Symbol":
-                if isinstance(headlines, list) and len(headlines) > 0:
-                    st.caption(f"📌 {headlines[0][:80]}..." if len(headlines[0]) > 80 else f"📌 {headlines[0]}")
-                else:
-                    st.caption("📌 No recent news")
+            headlines = analysis.get('news_headlines', ['No News'])
+            # FIX: Check if headlines is a list and not empty
+            if isinstance(headlines, list) and headlines and headlines[0] != "No News" and not headlines[0].startswith("Error") and headlines[0] != "No Symbol":
+                st.caption(f"📌 {headlines[0][:80]}..." if len(headlines[0]) > 80 else f"📌 {headlines[0]}")
             else:
                 st.caption("📌 No recent news")
         
@@ -1083,4 +1084,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v6.0 | SMC + News Sentiment + Auto Backtest + Alerts | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v6.1 | SMC + News Sentiment + Auto Backtest + Alerts | Neon DB (Permanent)")
