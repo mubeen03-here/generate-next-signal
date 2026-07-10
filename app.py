@@ -50,6 +50,7 @@ st.markdown("""
     .candle-status { background-color: #1a1a2e; border-left: 5px solid #ffaa00; padding: 8px 15px; border-radius: 8px; display: inline-block; }
     .smc-box { background-color: #1a1a3e; border-left: 5px solid #8866ff; padding: 10px; border-radius: 8px; margin: 5px 0; }
     .news-box { background-color: #1a2a1a; border-left: 5px solid #00ff88; padding: 10px; border-radius: 8px; margin: 5px 0; }
+    .whale-box { background-color: #1a1a2a; border-left: 5px solid #ffaa44; padding: 10px; border-radius: 8px; margin: 5px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -397,14 +398,10 @@ def detect_premium_discount(df, lookback=50):
 # ==================== NEWS SENTIMENT FUNCTION ====================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_news_sentiment(symbol):
-    """
-    Finnhub se news le kar Groq ke zariye sentiment nikaalna
-    """
     if "FINNHUB_API_KEY" not in st.secrets:
         return "Neutral", "API Key Missing"
     
     try:
-        # Symbol mapping for Finnhub
         if "BTC" in symbol:
             finnhub_symbol = "BINANCE:BTCUSDT"
         elif "NAS" in symbol or "NQ" in symbol:
@@ -424,11 +421,9 @@ def fetch_news_sentiment(symbol):
         if not news_data:
             return "Neutral", "No News"
         
-        # Top 5 headlines
         headlines = [item['headline'] for item in news_data[:5]]
         headlines_text = "\n".join(headlines)
         
-        # Groq se sentiment poochho
         prompt = f"""
         In financial news headlines ko dekho aur batao ke inka overall sentiment kya hai: Bullish, Bearish, ya Neutral?
         Sirf ek word jawab do (Bullish/Bearish/Neutral) aur ek choti reason.
@@ -452,6 +447,116 @@ def fetch_news_sentiment(symbol):
             
     except Exception as e:
         return "Neutral", f"Error: {str(e)}"
+
+# ==================== WHALE TRACKING FUNCTIONS ====================
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_whale_data(symbol):
+    """
+    Swiss Whale Intelligence MCP se whale data fetch karna
+    """
+    try:
+        # Try MCP first
+        import mcp
+        MCP_SERVER = "https://mcp.swisswhaleintelligence.com/mcp"
+        
+        # Symbol mapping
+        if "BTC" in symbol:
+            whale_symbol = "BTC"
+        elif "ETH" in symbol:
+            whale_symbol = "ETH"
+        else:
+            return "Neutral", "Symbol not supported for whale tracking"
+        
+        # MCP connection
+        client = mcp.Client(MCP_SERVER)
+        result = client.call_tool("whale_tracker", {
+            "symbol": whale_symbol,
+            "min_value": 100,
+            "limit": 10
+        })
+        
+        if result and result.get('transactions'):
+            txs = result.get('transactions', [])
+            total_buy = 0
+            total_sell = 0
+            for tx in txs:
+                amount = tx.get('amount', 0)
+                tx_type = tx.get('type', '')
+                if 'buy' in tx_type.lower() or 'incoming' in tx_type.lower():
+                    total_buy += amount
+                elif 'sell' in tx_type.lower() or 'outgoing' in tx_type.lower():
+                    total_sell += amount
+            
+            if total_buy > total_sell * 1.2:
+                return "Bullish", f"🐋 Whale buying: {total_buy - total_sell:.1f} more {whale_symbol} bought"
+            elif total_sell > total_buy * 1.2:
+                return "Bearish", f"🐋 Whale selling: {total_sell - total_buy:.1f} more {whale_symbol} sold"
+            else:
+                return "Neutral", "Whale flow balanced"
+    except:
+        # Fallback to Blockchain.com for BTC
+        try:
+            if "BTC" in symbol:
+                url = "https://blockchain.info/unconfirmed-transactions?format=json"
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    txs = data.get('txs', [])[:5]
+                    total_btc = 0
+                    for tx in txs:
+                        out_total = sum([out.get('value', 0) for out in tx.get('out', [])]) / 100000000
+                        if out_total > 10:
+                            total_btc += out_total
+                    if total_btc > 50:
+                        return "Bullish", f"🐋 Large BTC inflow: {total_btc:.1f} BTC"
+                    elif total_btc > 20:
+                        return "Neutral", f"🐋 Moderate BTC activity: {total_btc:.1f} BTC"
+        except:
+            pass
+            
+        # Fallback to Etherscan for ETH
+        try:
+            if "ETH" in symbol and "ETHERSCAN_API_KEY" in st.secrets:
+                url = f"https://api.etherscan.io/api?module=account&action=txlist&address=0x28C6c06298d514Db089934071355E5743bf21d60&apikey={st.secrets['ETHERSCAN_API_KEY']}"
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get('status') == '1':
+                        txs = data.get('result', [])[:5]
+                        total_eth = 0
+                        for tx in txs:
+                            val = int(tx.get('value', 0)) / 10**18
+                            if val > 100:
+                                total_eth += val
+                        if total_eth > 500:
+                            return "Bullish", f"🐋 Large ETH inflow: {total_eth:.0f} ETH"
+        except:
+            pass
+    
+    return "Neutral", "No whale activity detected"
+
+def fetch_eth_whale_details():
+    if "ETHERSCAN_API_KEY" not in st.secrets:
+        return "No ETH data"
+    
+    whales = [
+        "0x28C6c06298d514Db089934071355E5743bf21d60",
+        "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+    ]
+    
+    try:
+        details = []
+        for addr in whales[:2]:
+            url = f"https://api.etherscan.io/api?module=account&action=balance&address={addr}&tag=latest&apikey={st.secrets['ETHERSCAN_API_KEY']}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('status') == '1':
+                    balance = int(data.get('result', 0)) / 10**18
+                    details.append(f"🏦 {addr[:8]}...: {balance:.0f} ETH")
+        return "\n".join(details) if details else "No ETH data"
+    except:
+        return "ETH API error"
 
 # ==================== CANDLE STATUS ====================
 def get_candle_status(df):
@@ -573,7 +678,7 @@ def detect_candle_patterns(df):
         patterns.append("🔥 Bullish Marubozu (Strong)" if last['Close'] > last['Open'] else "💧 Bearish Marubozu (Strong)")
     return patterns
 
-# ==================== SIGNAL ENGINE (WITH SMC + NEWS) ====================
+# ==================== SIGNAL ENGINE (WITH SMC + NEWS + WHALE) ====================
 def calculate_advanced_signal(df, df_higher=None, symbol=""):
     if df is None or len(df) < 40:
         return None
@@ -622,6 +727,7 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     structure_score, structure_signal = detect_market_structure(df, lookback=10)
     score += structure_score
     reasons.append(f"🔹 SMC Structure: {structure_signal}")
+    signal_details['structure_signal'] = structure_signal
 
     ob_low, ob_high, ob_signal = detect_order_blocks(df, lookback=5)
     if ob_signal != "No OB":
@@ -680,6 +786,26 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     else:
         signal_details['news_sentiment'] = 'Neutral'
         signal_details['news_headlines'] = 'No Symbol'
+
+    # ==================== WHALE TRACKING SCORE ====================
+    if symbol:
+        whale_sentiment, whale_reason = fetch_whale_data(symbol)
+        signal_details['whale_sentiment'] = whale_sentiment
+        signal_details['whale_reason'] = whale_reason
+        
+        if whale_sentiment == "Bullish":
+            score += 2
+            reasons.append(f"🐋 Whale: {whale_reason} (+2)")
+        elif whale_sentiment == "Bearish":
+            score -= 2
+            reasons.append(f"🐋 Whale: {whale_reason} (-2)")
+        else:
+            reasons.append(f"🐋 Whale: {whale_reason}")
+        
+        # ETH details
+        if "ETH" in symbol and "ETHERSCAN_API_KEY" in st.secrets:
+            eth_details = fetch_eth_whale_details()
+            signal_details['eth_whale_details'] = eth_details
 
     # ==================== MTF TREND ====================
     if df_higher is not None and len(df_higher) > 20:
@@ -763,7 +889,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
 
     # ==================== FINAL SCORE ====================
     atr = float(last['ATR'])
-    # Scalping Mode (1:1 Ratio)
     if atr / price < 0.005:
         threshold_buy, threshold_sell = 3.5, -3.5
     else:
@@ -780,7 +905,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     else:
         signal, badge = "WAIT", "neutral"
 
-    # SL/TP (2x ATR each for 1:1)
     sl_price = price - (2.0 * atr) if "BUY" in signal else price + (2.0 * atr)
     tp_price = price + (2.0 * atr) if "BUY" in signal else price - (2.0 * atr)
     rr_ratio = round(2.0 / 2.0, 2)
@@ -810,12 +934,16 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         "order_block_low": signal_details.get('order_block_low', None),
         "order_block_signal": signal_details.get('order_block_signal', None),
         "news_sentiment": signal_details.get('news_sentiment', 'Neutral'),
-        "news_headlines": signal_details.get('news_headlines', 'No News')
+        "news_headlines": signal_details.get('news_headlines', 'No News'),
+        "whale_sentiment": signal_details.get('whale_sentiment', 'Neutral'),
+        "whale_reason": signal_details.get('whale_reason', 'No whale data'),
+        "eth_whale_details": signal_details.get('eth_whale_details', ''),
+        "structure_signal": signal_details.get('structure_signal', 'Neutral')
     }
 
 # ==================== GROK & GEMINI ====================
 def get_grok_analysis(symbol, tf, analysis, price):
-    prompt = f"Symbol: {symbol} | TF: {tf} | Price: {price}\nSignal: {analysis['signal']} | Score: {analysis['score']}\nReasons: {', '.join(analysis['reasons'])}\nPatterns: {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}\nMTF Bias: {analysis['mtf_bias']}\nSL: {analysis['sl']} | TP: {analysis['tp']}\nNews Sentiment: {analysis.get('news_sentiment', 'Neutral')}\n\nAs a pro trader, give short, direct advice on this trade:\n1. Is this signal reliable? Why?\n2. What is the probability of next candle going as expected?\n3. Should we enter now or wait? (give specific price action triggers)\nMax 6 lines."
+    prompt = f"Symbol: {symbol} | TF: {tf} | Price: {price}\nSignal: {analysis['signal']} | Score: {analysis['score']}\nReasons: {', '.join(analysis['reasons'])}\nPatterns: {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}\nMTF Bias: {analysis['mtf_bias']}\nSL: {analysis['sl']} | TP: {analysis['tp']}\nNews Sentiment: {analysis.get('news_sentiment', 'Neutral')}\nWhale Sentiment: {analysis.get('whale_sentiment', 'Neutral')}\n\nAs a pro trader, give short, direct advice on this trade:\n1. Is this signal reliable? Why?\n2. What is the probability of next candle going as expected?\n3. Should we enter now or wait? (give specific price action triggers)\nMax 6 lines."
     try:
         response = groq_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.4, max_tokens=250)
         return response.choices[0].message.content.strip()
@@ -839,7 +967,7 @@ def analyze_chart_with_gemini(image, symbol, tf):
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">🚀 Pro Max Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"🇵🇰 {get_pakistan_time()} | SMC + News Sentiment + MTF + Volume + Patterns | Neon DB")
+st.caption(f"🇵🇰 {get_pakistan_time()} | SMC + News + Whale Tracker | Neon DB")
 
 col1, col2, col3 = st.columns([1, 1, 2])
 with col1:
@@ -920,12 +1048,6 @@ if st.session_state.get("selected_symbol"):
         st.stop()
     
     present_color, present_emoji, next_prediction, next_emoji = get_candle_status(df_lower)
-    st.markdown(f"""
-    <div class="candle-status">
-        <b>🕯️ Present Candle:</b> {present_emoji} {present_color}<br>
-        <b>🔮 Next Candle Prediction:</b> {next_emoji} {next_prediction}
-    </div>
-    """, unsafe_allow_html=True)
     
     analysis = calculate_advanced_signal(df_lower, df_higher, ticker)
     
@@ -974,88 +1096,121 @@ if st.session_state.get("selected_symbol"):
             else:
                 st.info("🔕 Alerts are OFF. Signal saved in DB only. Turn ON alerts to receive Telegram/Email.")
         
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💰 Price", f"{analysis['last_price']:,}")
-        c2.metric("📊 Signal", analysis['signal'])
-        c3.metric("📈 RSI", analysis['rsi'])
-        c4.metric("⚡ ATR", analysis['atr'])
+        # ==================== TABS ====================
+        tab1, tab2, tab3 = st.tabs(["📊 Technical", "🧠 SMC + News", "🐋 Whale Tracker"])
         
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown(
-                f"<div class='mtf-box'><b>⏳ Multi-Timeframe Trend (Higher TF):</b> {analysis['mtf_bias']}<br><b>Score:</b> {analysis['score']} / 10</div>",
-                unsafe_allow_html=True
+        with tab1:
+            st.markdown("### 📊 Technical Analysis")
+            
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("💰 Price", f"{analysis['last_price']:,}")
+            c2.metric("📊 Signal", analysis['signal'])
+            c3.metric("📈 RSI", analysis['rsi'])
+            c4.metric("⚡ ATR", analysis['atr'])
+            
+            st.markdown("### 🎯 Risk Management")
+            st.info(
+                f"- **Stop Loss (SL):** {analysis['sl']} (2.0x ATR)\n"
+                f"- **Take Profit (TP):** {analysis['tp']} (2.0x ATR)\n"
+                f"- **Risk:Reward Ratio:** 1 : {analysis['rr_ratio']}"
             )
-        with col_b:
-            st.markdown(
-                f"<div class='smc-box'><b>🔹 SMC Analysis:</b><br>"
-                f"- FVG: {analysis.get('fvg_signal', 'None')}<br>"
-                f"- Order Block: {analysis.get('order_block_signal', 'None')}<br>"
-                f"- EQH: {analysis.get('eqh', 'None')} | EQL: {analysis.get('eql', 'None')}</div>",
-                unsafe_allow_html=True
-            )
-        
-        # ---- NEWS SENTIMENT DISPLAY (FIXED) ----
-        st.markdown("### 📰 News Sentiment")
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            sentiment = analysis.get('news_sentiment', 'Neutral')
-            if sentiment == "Bullish":
-                st.success(f"🟢 {sentiment}")
-            elif sentiment == "Bearish":
-                st.error(f"🔴 {sentiment}")
+            
+            st.markdown("### 🕯️ Candle Status")
+            st.markdown(f"""
+            <div class="candle-status">
+                <b>Present Candle:</b> {present_emoji} {present_color}<br>
+                <b>Next Prediction:</b> {next_emoji} {next_prediction}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
+            if db_initialized:
+                winrate, total = get_stats(ticker)
+                if winrate is not None:
+                    st.progress(winrate / 100, text=f"Win Rate (Last {total} signals): {winrate}%")
+                    if winrate >= 60:
+                        st.success("✅ System consistent perform kar raha hai!")
+                    else:
+                        st.warning("⚠️ System ko optimize karne ki zaroorat hai.")
+                else:
+                    st.info("📭 Abhi koi closed signal nahi. Pehle kuch trades complete hone dein.")
             else:
-                st.info(f"⚪ {sentiment}")
-        with col2:
-            headlines = analysis.get('news_headlines', '')
-            # FIX: Convert list to string if needed to avoid .startswith() error
+                st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
+            st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)")
+        
+        with tab2:
+            st.markdown("### 🧠 Smart Money Concepts (SMC)")
+            structure = analysis.get('structure_signal', 'N/A')
+            st.markdown(
+                f"""<div class='smc-box'>
+                <b>Structure:</b> {structure}<br>
+                <b>Order Block:</b> {analysis.get('order_block_signal', 'None')}<br>
+                <b>FVG:</b> {analysis.get('fvg_signal', 'None')}<br>
+                <b>EQH:</b> {analysis.get('eqh', 'None')} | <b>EQL:</b> {analysis.get('eql', 'None')}
+                </div>""", unsafe_allow_html=True
+            )
+            
+            st.markdown("### 📰 News Sentiment")
+            sentiment = analysis.get('news_sentiment', 'Neutral')
+            headlines = analysis.get('news_headlines', 'No News')
             if isinstance(headlines, list):
                 headlines = headlines[0] if headlines else "No News"
-            if headlines and headlines not in ["No News", "No Symbol"] and not headlines.startswith("Error"):
-                st.caption(f"📌 {headlines[:80]}..." if len(headlines) > 80 else f"📌 {headlines}")
-            else:
-                st.caption("📌 No recent news")
-        
-        st.markdown("### 🎯 Risk Management (ATR Based)")
-        st.info(
-            f"- **Stop Loss (SL):** {analysis['sl']} (2.0x ATR)\n"
-            f"- **Take Profit (TP):** {analysis['tp']} (2.0x ATR)\n"
-            f"- **Risk:Reward Ratio:** 1 : {analysis['rr_ratio']}"
-        )
-        
-        st.markdown("### 🕯️ Next Candle Prediction")
-        st.success(analysis['expected_candles'])
-        st.warning(analysis['pullback'])
-        
-        if analysis['signal'] == "WAIT":
-            st.markdown(
-                f"<div class='backtest-box'><b>⏳ WAIT - Why?</b><br>"
-                f"🔸 Market structure or SMC zones suggest waiting.<br>"
-                f"🔸 Watch for break of structure or liquidity sweep.<br>"
-                f"🔸 Entry only after clear confirmation.</div>",
-                unsafe_allow_html=True
-            )
-        
-        st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
-        if db_initialized:
-            winrate, total = get_stats(ticker)
-            if winrate is not None:
-                st.progress(winrate / 100, text=f"Win Rate (Last {total} signals): {winrate}%")
-                if winrate >= 60:
-                    st.success("✅ System consistent perform kar raha hai!")
+            
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if sentiment == "Bullish":
+                    st.success(f"🟢 {sentiment}")
+                elif sentiment == "Bearish":
+                    st.error(f"🔴 {sentiment}")
                 else:
-                    st.warning("⚠️ System ko optimize karne ki zaroorat hai.")
+                    st.info(f"⚪ {sentiment}")
+            with col2:
+                if headlines and headlines not in ["No News", "No Symbol"]:
+                    st.caption(f"📌 {headlines[:80]}...")
+                else:
+                    st.caption("📌 No recent news")
+            
+            st.markdown("### 📊 Multi-Timeframe Trend")
+            st.markdown(f"<div class='mtf-box'><b>Trend:</b> {analysis['mtf_bias']}<br><b>Score:</b> {analysis['score']} / 10</div>", unsafe_allow_html=True)
+            
+            with st.expander("🧠 Technical Reasons (Score Breakup)"):
+                for r in analysis['reasons']:
+                    st.write(f"- {r}")
+                st.caption(f"Total Score: {analysis['score']}")
+        
+        with tab3:
+            st.markdown("### 🐋 Whale Tracker (Smart Money Flow)")
+            
+            whale_sentiment = analysis.get('whale_sentiment', 'Neutral')
+            whale_reason = analysis.get('whale_reason', 'No whale data')
+            
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if whale_sentiment == "Bullish":
+                    st.success(f"🟢 {whale_sentiment}")
+                elif whale_sentiment == "Bearish":
+                    st.error(f"🔴 {whale_sentiment}")
+                else:
+                    st.info(f"⚪ {whale_sentiment}")
+            with col2:
+                st.caption(whale_reason)
+            
+            st.divider()
+            
+            if "ETH" in ticker:
+                eth_details = analysis.get('eth_whale_details', 'No ETH data')
+                st.markdown("#### 🏦 Top ETH Whales Balance")
+                st.code(eth_details, language='text')
             else:
-                st.info("📭 Abhi koi closed signal nahi. Pehle kuch trades complete hone dein.")
-        else:
-            st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
-        st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)")
+                st.info("📝 Whale tracking available for **BTC** and **ETH** symbols.")
+            
+            st.divider()
+            st.caption("📊 **Legend:**")
+            st.caption("🟢 Bullish = More buying than selling")
+            st.caption("🔴 Bearish = More selling than buying")
+            st.caption("⚪ Neutral = Balanced flow")
         
-        with st.expander("🧠 Technical Reasons (Score Breakup)"):
-            for r in analysis['reasons']:
-                st.write(f"- {r}")
-            st.caption(f"Total Score: {analysis['score']}")
-        
+        # ---- GROK ----
         st.markdown("### 🤖 Grok Text Analysis")
         if st.button("Ask Grok", key="grok_main"):
             with st.spinner("Grok soch raha hai..."):
@@ -1065,6 +1220,7 @@ if st.session_state.get("selected_symbol"):
                 unsafe_allow_html=True
             )
         
+        # ---- GEMINI ----
         st.markdown("### 📸 Gemini Vision (Upload Chart Screenshot)")
         st.write("Current candle ka screenshot upload karein taake Gemini next candle predict kare.")
         uploaded = st.file_uploader(f"Upload {name} ({tf_lower}) chart image", type=["png", "jpg"], key="gemini_upload")
@@ -1083,4 +1239,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v6.1 | SMC + News Sentiment + Auto Backtest + Alerts | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v7.0 | SMC + News + Whale Tracker + Auto Backtest + Alerts | Neon DB (Permanent)")
