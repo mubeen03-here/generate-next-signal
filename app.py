@@ -72,7 +72,6 @@ st.markdown("""
     .smc-box { background-color: #1a1a3e; border-left: 3px solid #8866ff; padding: 6px 10px; border-radius: 4px; margin: 3px 0; font-size: 0.8rem; }
     .whale-box { background-color: #1a1a2a; border-left: 3px solid #ffaa44; padding: 6px 10px; border-radius: 4px; margin: 3px 0; font-size: 0.8rem; }
     
-    /* KPI Cards - Clean, no extra background */
     .kpi-card { 
         background-color: transparent; 
         padding: 0.3rem 0.2rem; 
@@ -83,38 +82,13 @@ st.markdown("""
     .kpi-value { font-size: 1rem; font-weight: 700; }
     .kpi-label { color: #666; font-size: 0.55rem; text-transform: uppercase; letter-spacing: 0.5px; }
     
-    /* Button row - clean parallel style */
-    .btn-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
-        padding: 0;
-        margin: 0;
-    }
-    .btn-row .stButton {
-        margin: 0;
-        padding: 0;
-    }
-    
     .stTabs [data-baseweb="tab-list"] { gap: 2px; }
     .stTabs [data-baseweb="tab"] { padding: 2px 10px; font-size: 0.75rem; }
     
-    /* Fix for extra background */
-    div[data-testid="stVerticalBlock"] {
-        gap: 0.2rem;
-    }
-    div[data-testid="stHorizontalBlock"] {
-        gap: 0.2rem;
-    }
-    .stMarkdown {
-        margin: 0;
-        padding: 0;
-    }
-    .element-container {
-        margin: 0;
-        padding: 0;
-    }
+    div[data-testid="stVerticalBlock"] { gap: 0.2rem; }
+    div[data-testid="stHorizontalBlock"] { gap: 0.2rem; }
+    .stMarkdown { margin: 0; padding: 0; }
+    .element-container { margin: 0; padding: 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -258,17 +232,24 @@ def save_signal(symbol, signal, entry, target, sl):
     except Exception as e:
         st.error(f"❌ Failed to save signal: {str(e)}")
 
+# ==================== FIXED: mark_alert_sent (NO ORDER BY / LIMIT IN UPDATE) ====================
 def mark_alert_sent(symbol, signal, entry_price):
     conn = get_conn()
     if conn is None:
         return
     try:
         with conn.session as s:
+            # Subquery se latest timestamp select karo, phir update karo
             s.execute(text("""
                 UPDATE signal_history 
                 SET alert_sent = TRUE 
-                WHERE symbol = :sym AND signal = :sig AND entry_price = :price AND alert_sent = FALSE
-                ORDER BY timestamp DESC LIMIT 1
+                WHERE symbol = :sym AND signal = :sig AND entry_price = :price 
+                AND alert_sent = FALSE
+                AND timestamp = (
+                    SELECT timestamp FROM signal_history 
+                    WHERE symbol = :sym AND signal = :sig AND entry_price = :price 
+                    ORDER BY timestamp DESC LIMIT 1
+                )
             """), {"sym": symbol, "sig": signal, "price": entry_price})
             s.commit()
     except Exception as e:
@@ -1029,15 +1010,12 @@ def analyze_chart_with_gemini(image, symbol, tf):
     return "Gemini analysis failed."
 
 # ==================== UI ====================
-# ---- HEADER - SMALL, LEFT ALIGNED ----
 col_header, col_spacer = st.columns([1, 5])
 with col_header:
     st.markdown('<span class="main-header">🚀 Pro Max Trading Signals</span>', unsafe_allow_html=True)
 
-# ---- TIME & STATUS ----
 st.caption(f"📅 {get_pakistan_time()} | SMC + News + Whale Tracker | Neon DB")
 
-# ---- BUTTONS - PARALLEL STYLE ----
 btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 4])
 with btn_col1:
     if st.session_state.alerts_enabled:
@@ -1053,7 +1031,6 @@ with btn_col2:
         st.cache_data.clear()
         st.rerun()
 
-# ---- SYMBOLS ----
 MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "USD/JPY": "USDJPY=X", "NAS100": "NQ=F"}
 
 db_initialized = init_db()
@@ -1085,7 +1062,6 @@ for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
             st.session_state.selected_name = name
             st.rerun()
 
-# ==================== DETAILED VIEW ====================
 if st.session_state.get("selected_symbol"):
     ticker = st.session_state.selected_symbol
     name = st.session_state.get("selected_name", ticker)
@@ -1120,7 +1096,6 @@ if st.session_state.get("selected_symbol"):
         if db_initialized:
             update_old_signals(ticker, df_lower)
         
-        # ---- SEND ALERTS ----
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             if st.session_state.alerts_enabled:
                 already_sent = check_alert_sent(ticker, analysis['signal'], analysis['last_price'])
@@ -1150,7 +1125,7 @@ if st.session_state.get("selected_symbol"):
             else:
                 st.info("🔕 Alerts are OFF. Signal saved in DB only.")
         
-        # ==================== KPI CARDS (CLEAN, NO EXTRA BG) ====================
+        # ==================== KPI CARDS ====================
         st.markdown("### 📊 Key Metrics")
         kpi_cols = st.columns(5)
         with kpi_cols[0]:
@@ -1301,7 +1276,6 @@ if st.session_state.get("selected_symbol"):
                 st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
             st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)")
         
-        # ---- GROK ----
         st.markdown("### 🤖 Grok Text Analysis")
         if st.button("Ask Grok", key="grok_main"):
             with st.spinner("Grok soch raha hai..."):
@@ -1311,7 +1285,6 @@ if st.session_state.get("selected_symbol"):
                 unsafe_allow_html=True
             )
         
-        # ---- GEMINI ----
         st.markdown("### 📸 Gemini Vision")
         st.write("Current candle ka screenshot upload karein.")
         uploaded = st.file_uploader(f"Upload {name} ({tf_lower}) chart", type=["png", "jpg"], key="gemini_upload")
