@@ -34,26 +34,29 @@ st.set_page_config(page_title="Pro Max Trading Signals", layout="wide", initial_
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #fafafa; }
-    .main-header { font-size: 2.5rem; font-weight: 700; background: linear-gradient(90deg, #00ff9f, #00b8ff);
+    .main-header { font-size: 2rem; font-weight: 700; background: linear-gradient(90deg, #00ff9f, #00b8ff);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .symbol-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 14px; padding: 1rem; }
-    .signal-badge { padding: 0.3rem 0.9rem; border-radius: 20px; font-weight: 700; display: inline-block; }
+    .symbol-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 0.7rem; }
+    .symbol-card strong { font-size: 0.9rem; }
+    .signal-badge { padding: 0.2rem 0.6rem; border-radius: 16px; font-weight: 700; font-size: 0.75rem; display: inline-block; }
     .strong-buy { background-color: #00c853; color: white; }
     .buy { background-color: #4caf50; color: white; }
     .neutral { background-color: #ff9800; color: white; }
     .sell { background-color: #f44336; color: white; }
     .strong-sell { background-color: #d32f2f; color: white; }
-    .metric-value { font-size: 1.7rem; font-weight: 700; }
-    .mtf-box { background-color: #1a2332; border-left: 5px solid #00b8ff; padding: 10px; border-radius: 8px; }
-    .sr-box { background-color: #2a1a2e; border-left: 5px solid #ff9800; padding: 10px; border-radius: 8px; }
-    .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 10px; border-radius: 8px; }
-    .candle-status { background-color: #1a1a2e; border-left: 5px solid #ffaa00; padding: 8px 15px; border-radius: 8px; display: inline-block; }
-    .smc-box { background-color: #1a1a3e; border-left: 5px solid #8866ff; padding: 10px; border-radius: 8px; margin: 5px 0; }
-    .whale-box { background-color: #1a1a2a; border-left: 5px solid #ffaa44; padding: 10px; border-radius: 8px; margin: 5px 0; }
-    .kpi-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 1rem; text-align: center; }
-    .kpi-icon { font-size: 2rem; }
-    .kpi-value { font-size: 1.6rem; font-weight: 700; }
-    .kpi-label { color: #888; font-size: 0.8rem; }
+    .metric-value { font-size: 1.2rem; font-weight: 700; }
+    .mtf-box { background-color: #1a2332; border-left: 4px solid #00b8ff; padding: 8px; border-radius: 6px; font-size: 0.85rem; }
+    .sr-box { background-color: #2a1a2e; border-left: 4px solid #ff9800; padding: 8px; border-radius: 6px; font-size: 0.85rem; }
+    .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 8px; border-radius: 6px; font-size: 0.85rem; }
+    .candle-status { background-color: #1a1a2e; border-left: 4px solid #ffaa00; padding: 6px 12px; border-radius: 6px; display: inline-block; font-size: 0.85rem; }
+    .smc-box { background-color: #1a1a3e; border-left: 4px solid #8866ff; padding: 8px; border-radius: 6px; margin: 4px 0; font-size: 0.85rem; }
+    .whale-box { background-color: #1a1a2a; border-left: 4px solid #ffaa44; padding: 8px; border-radius: 6px; margin: 4px 0; font-size: 0.85rem; }
+    .kpi-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 0.5rem; text-align: center; }
+    .kpi-icon { font-size: 1.2rem; }
+    .kpi-value { font-size: 1.1rem; font-weight: 700; }
+    .kpi-label { color: #888; font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
+    .stTabs [data-baseweb="tab"] { padding: 4px 12px; font-size: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -145,6 +148,7 @@ def init_db():
     for attempt in range(max_retries):
         try:
             with conn.session as s:
+                # Create table if not exists
                 s.execute(text("""
                     CREATE TABLE IF NOT EXISTS signal_history (
                         id SERIAL PRIMARY KEY,
@@ -155,11 +159,18 @@ def init_db():
                         target_price REAL,
                         stop_loss REAL,
                         status TEXT DEFAULT 'PENDING',
-                        result TEXT,
-                        alert_sent BOOLEAN DEFAULT FALSE
+                        result TEXT
                     )
                 """))
                 s.commit()
+                
+                # Check if alert_sent column exists, if not add it
+                try:
+                    s.execute(text("ALTER TABLE signal_history ADD COLUMN alert_sent BOOLEAN DEFAULT FALSE"))
+                    s.commit()
+                except Exception:
+                    pass  # Column already exists
+                
                 return True
         except Exception as e:
             if attempt < max_retries - 1:
@@ -197,7 +208,6 @@ def mark_alert_sent(symbol, signal, entry_price):
         return
     try:
         with conn.session as s:
-            # Find latest matching signal and mark alert_sent = TRUE
             s.execute(text("""
                 UPDATE signal_history 
                 SET alert_sent = TRUE 
@@ -280,6 +290,23 @@ def get_stats(symbol):
     except Exception as e:
         st.error(f"❌ Failed to get stats: {str(e)}")
         return None, 0
+
+def check_alert_sent(symbol, signal, price):
+    conn = get_conn()
+    if conn is None:
+        return False
+    try:
+        with conn.session as s:
+            result = s.execute(text("""
+                SELECT id FROM signal_history 
+                WHERE symbol = :sym AND signal = :sig 
+                AND entry_price = :price 
+                AND alert_sent = TRUE
+                ORDER BY timestamp DESC LIMIT 1
+            """), {"sym": symbol, "sig": signal, "price": price}).fetchone()
+            return result is not None
+    except Exception as e:
+        return False
 
 # ==================== SMC FUNCTIONS ====================
 def detect_market_structure(df, lookback=10):
@@ -952,16 +979,16 @@ st.caption(f"🇵🇰 {get_pakistan_time()} | SMC + News + Whale Tracker | Neon 
 col1, col2 = st.columns([1, 1])
 with col1:
     if st.session_state.alerts_enabled:
-        if st.button("🔔 Alerts: ON", key="alert_toggle", help="Click to turn OFF alerts (Telegram/Email)"):
+        if st.button("🔔 Alerts: ON", key="alert_toggle", help="Click to turn OFF alerts"):
             st.session_state.alerts_enabled = False
             st.rerun()
     else:
-        if st.button("🔕 Alerts: OFF", key="alert_toggle", help="Click to turn ON alerts (Telegram/Email)"):
+        if st.button("🔕 Alerts: OFF", key="alert_toggle", help="Click to turn ON alerts"):
             st.session_state.alerts_enabled = True
             st.rerun()
 
 with col2:
-    if st.button("🔄 Refresh Data & Backtest"):
+    if st.button("🔄 Refresh Data", key="refresh_btn"):
         st.cache_data.clear()
         st.rerun()
 
@@ -991,7 +1018,7 @@ for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
             f"<span class='signal-badge {temp_analysis['badge_class'] if temp_analysis else 'neutral'}'>{sig}</span></div>",
             unsafe_allow_html=True
         )
-        if st.button(f"Analyze {name.split()[0]}", key=f"btn_{idx}"):
+        if st.button(f"Analyze", key=f"btn_{idx}"):
             st.session_state.selected_symbol = ticker
             st.session_state.selected_name = name
             st.rerun()
@@ -1018,7 +1045,6 @@ if st.session_state.get("selected_symbol"):
     analysis = calculate_advanced_signal(df_lower, df_higher, ticker)
     
     if analysis:
-        # ---- SAVE SIGNAL ----
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             save_signal(
                 symbol=ticker,
@@ -1028,53 +1054,37 @@ if st.session_state.get("selected_symbol"):
                 sl=analysis['sl']
             )
         
-        # ---- UPDATE OLD SIGNALS ----
         if db_initialized:
             update_old_signals(ticker, df_lower)
         
-        # ---- SEND ALERTS (ONLY IF NEW, NOT SENT BEFORE) ----
+        # ---- SEND ALERTS (ONLY IF NOT SENT BEFORE) ----
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             if st.session_state.alerts_enabled:
-                # Check if alert already sent for this signal (check last 5 minutes)
-                conn = get_conn()
-                if conn:
-                    try:
-                        with conn.session as s:
-                            # Check if this specific signal was already sent recently
-                            check = s.execute(text("""
-                                SELECT id FROM signal_history 
-                                WHERE symbol = :sym AND signal = :sig 
-                                AND entry_price = :price 
-                                AND alert_sent = TRUE
-                                ORDER BY timestamp DESC LIMIT 1
-                            """), {"sym": ticker, "sig": analysis['signal'], "price": analysis['last_price']}).fetchone()
-                            
-                            if not check:
-                                # Not sent yet, send alerts
-                                telegram_sent = send_telegram_alert(
-                                    symbol=name,
-                                    signal=analysis['signal'],
-                                    price=analysis['last_price'],
-                                    tp=analysis['tp'],
-                                    sl=analysis['sl']
-                                )
-                                email_sent = send_email_alert(
-                                    symbol=name,
-                                    signal=analysis['signal'],
-                                    price=analysis['last_price'],
-                                    tp=analysis['tp'],
-                                    sl=analysis['sl']
-                                )
-                                if telegram_sent and email_sent:
-                                    st.success("✅ Alerts sent to Telegram & Email!")
-                                    # Mark alert as sent
-                                    mark_alert_sent(ticker, analysis['signal'], analysis['last_price'])
-                                else:
-                                    st.warning("⚠️ Alerts partially failed. Check logs.")
-                            else:
-                                st.info("ℹ️ Signal already alerted recently. Duplicate skipped.")
-                    except Exception as e:
-                        st.warning(f"⚠️ Alert check failed: {str(e)}")
+                # Check if already sent
+                already_sent = check_alert_sent(ticker, analysis['signal'], analysis['last_price'])
+                
+                if not already_sent:
+                    telegram_sent = send_telegram_alert(
+                        symbol=name,
+                        signal=analysis['signal'],
+                        price=analysis['last_price'],
+                        tp=analysis['tp'],
+                        sl=analysis['sl']
+                    )
+                    email_sent = send_email_alert(
+                        symbol=name,
+                        signal=analysis['signal'],
+                        price=analysis['last_price'],
+                        tp=analysis['tp'],
+                        sl=analysis['sl']
+                    )
+                    if telegram_sent and email_sent:
+                        st.success("✅ Alerts sent to Telegram & Email!")
+                        mark_alert_sent(ticker, analysis['signal'], analysis['last_price'])
+                    else:
+                        st.warning("⚠️ Alerts partially failed. Check logs.")
+                else:
+                    st.info("ℹ️ Signal already alerted. Duplicate skipped.")
             else:
                 st.info("🔕 Alerts are OFF. Signal saved in DB only.")
         
@@ -1167,8 +1177,8 @@ if st.session_state.get("selected_symbol"):
             st.markdown("### 🕯️ Candle Status")
             st.markdown(f"""
             <div class="candle-status">
-                <b>Present Candle:</b> {present_emoji} {present_color}<br>
-                <b>Next Prediction:</b> {next_emoji} {next_prediction}
+                <b>Present:</b> {present_emoji} {present_color}<br>
+                <b>Next:</b> {next_emoji} {next_prediction}
             </div>
             """, unsafe_allow_html=True)
             
@@ -1176,7 +1186,7 @@ if st.session_state.get("selected_symbol"):
             st.info(
                 f"- **Stop Loss (SL):** {analysis['sl']} (2.0x ATR)\n"
                 f"- **Take Profit (TP):** {analysis['tp']} (2.0x ATR)\n"
-                f"- **Risk:Reward Ratio:** 1 : {analysis['rr_ratio']}"
+                f"- **Risk:Reward:** 1 : {analysis['rr_ratio']}"
             )
             
             with st.expander("🧠 Technical Reasons (Score Breakup)"):
@@ -1185,7 +1195,7 @@ if st.session_state.get("selected_symbol"):
                 st.caption(f"Total Score: {analysis['score']}")
         
         with tab2:
-            st.markdown("### 🐋 Whale Tracker (Smart Money Flow)")
+            st.markdown("### 🐋 Whale Tracker")
             
             whale_sentiment = analysis.get('whale_sentiment', 'Neutral')
             whale_reason = analysis.get('whale_reason', 'No whale data')
@@ -1205,16 +1215,13 @@ if st.session_state.get("selected_symbol"):
             
             if "ETH" in ticker:
                 eth_details = analysis.get('eth_whale_details', 'No ETH data')
-                st.markdown("#### 🏦 Top ETH Whales Balance")
+                st.markdown("#### 🏦 Top ETH Whales")
                 st.code(eth_details, language='text')
             else:
-                st.info("📝 Whale tracking available for **BTC** and **ETH** symbols.")
+                st.info("📝 Whale tracking available for **BTC** and **ETH**")
             
             st.divider()
-            st.caption("📊 **Legend:**")
-            st.caption("🟢 Bullish = More buying than selling")
-            st.caption("🔴 Bearish = More selling than buying")
-            st.caption("⚪ Neutral = Balanced flow")
+            st.caption("🟢 Bullish = More buying | 🔴 Bearish = More selling | ⚪ Neutral = Balanced")
         
         with tab3:
             st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
@@ -1243,14 +1250,14 @@ if st.session_state.get("selected_symbol"):
             )
         
         # ---- GEMINI ----
-        st.markdown("### 📸 Gemini Vision (Upload Chart Screenshot)")
-        st.write("Current candle ka screenshot upload karein taake Gemini next candle predict kare.")
-        uploaded = st.file_uploader(f"Upload {name} ({tf_lower}) chart image", type=["png", "jpg"], key="gemini_upload")
+        st.markdown("### 📸 Gemini Vision")
+        st.write("Current candle ka screenshot upload karein.")
+        uploaded = st.file_uploader(f"Upload {name} ({tf_lower}) chart", type=["png", "jpg"], key="gemini_upload")
         if uploaded:
             img = Image.open(uploaded)
             st.image(img, caption="Uploaded Chart", use_container_width=True)
             if st.button("🔮 Predict Next Candle via Gemini", key="gemini_main"):
-                with st.spinner("Gemini analyzing chart..."):
+                with st.spinner("Gemini analyzing..."):
                     gem_res = analyze_chart_with_gemini(img, name, tf_lower)
                 st.markdown(
                     f"<div class='sr-box' style='border-left-color: #00ff9f;'>{gem_res}</div>",
@@ -1261,4 +1268,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v7.2 | SMC + News + Whale Tracker + KPI Cards | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v7.3 | SMC + News + Whale Tracker + KPI Cards | Neon DB (Permanent)")
