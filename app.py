@@ -31,64 +31,107 @@ if "FINNHUB_API_KEY" not in st.secrets:
 
 st.set_page_config(page_title="Pro Max Trading Signals", layout="wide", initial_sidebar_state="expanded")
 
+# ==================== PROFESSIONAL UI/CSS ====================
 st.markdown("""
 <style>
-    .stApp { background-color: #0e1117; color: #fafafa; }
+    /* Base Theme */
+    .stApp { 
+        background-color: #0A0E17; 
+        color: #E2E8F0; 
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    
+    /* Sleek Header */
     .main-header { 
-        font-size: 1.3rem; 
-        font-weight: 700; 
-        background: linear-gradient(90deg, #00ff9f, #00b8ff);
-        -webkit-background-clip: text; 
-        -webkit-text-fill-color: transparent; 
+        font-size: 1.6rem; 
+        font-weight: 600; 
+        color: #FFFFFF; 
+        border-bottom: 2px solid #2563EB;
+        padding-bottom: 8px;
         display: inline-block;
-        margin: 0;
-        padding: 0;
+        margin-bottom: 10px;
+        letter-spacing: 0.5px;
     }
+    
+    /* Interactive Symbol Cards */
     .symbol-card { 
-        background-color: #161b22; 
-        border: 1px solid #30363d; 
+        background-color: #111827; 
+        border: 1px solid #1E293B; 
         border-radius: 8px; 
-        padding: 0.4rem 0.6rem; 
-        margin: 0.2rem 0;
+        padding: 16px; 
+        margin: 5px 0;
+        text-align: center;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        transition: all 0.2s ease-in-out;
     }
-    .symbol-card strong { font-size: 0.8rem; }
-    .symbol-card .metric-value { font-size: 1rem; font-weight: 700; }
+    .symbol-card:hover { 
+        transform: translateY(-2px); 
+        border-color: #3B82F6;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    }
+    .symbol-card strong { font-size: 1rem; color: #94A3B8; font-weight: 500; display: block; margin-bottom: 4px;}
+    .symbol-card .metric-value { font-size: 1.4rem; font-weight: 700; color: #F8FAFC; }
+    
+    /* Professional Badges */
     .signal-badge { 
-        padding: 0.1rem 0.5rem; 
-        border-radius: 12px; 
-        font-weight: 700; 
-        font-size: 0.65rem; 
+        padding: 4px 12px; 
+        border-radius: 16px; 
+        font-weight: 600; 
+        font-size: 0.75rem; 
         display: inline-block; 
+        letter-spacing: 0.5px;
+        margin-top: 8px;
+        text-transform: uppercase;
     }
-    .strong-buy { background-color: #00c853; color: white; }
-    .buy { background-color: #4caf50; color: white; }
-    .neutral { background-color: #ff9800; color: white; }
-    .sell { background-color: #f44336; color: white; }
-    .strong-sell { background-color: #d32f2f; color: white; }
-    .mtf-box { background-color: #1a2332; border-left: 3px solid #00b8ff; padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; margin: 2px 0; }
-    .sr-box { background-color: #2a1a2e; border-left: 3px solid #ff9800; padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; margin: 2px 0; }
-    .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; }
-    .candle-status { background-color: #1a1a2e; border-left: 3px solid #ffaa00; padding: 4px 10px; border-radius: 4px; display: inline-block; font-size: 0.8rem; }
-    .smc-box { background-color: #1a1a3e; border-left: 3px solid #8866ff; padding: 6px 10px; border-radius: 4px; margin: 3px 0; font-size: 0.8rem; }
-    .whale-box { background-color: #1a1a2a; border-left: 3px solid #ffaa44; padding: 6px 10px; border-radius: 4px; margin: 3px 0; font-size: 0.8rem; }
+    .strong-buy { background-color: rgba(16, 185, 129, 0.2); color: #10B981; border: 1px solid rgba(16, 185, 129, 0.5); }
+    .buy { background-color: rgba(52, 211, 153, 0.1); color: #34D399; border: 1px solid rgba(52, 211, 153, 0.4); }
+    .neutral { background-color: rgba(245, 158, 11, 0.1); color: #F59E0B; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .sell { background-color: rgba(248, 113, 113, 0.1); color: #F87171; border: 1px solid rgba(248, 113, 113, 0.4); }
+    .strong-sell { background-color: rgba(239, 68, 68, 0.2); color: #EF4444; border: 1px solid rgba(239, 68, 68, 0.5); }
     
+    /* Clean Info Boxes */
+    .modern-box { 
+        background-color: #111827; 
+        border: 1px solid #1E293B;
+        padding: 12px 16px; 
+        border-radius: 8px; 
+        font-size: 0.85rem; 
+        margin: 6px 0; 
+        color: #CBD5E1;
+        line-height: 1.6;
+    }
+    .border-blue { border-left: 4px solid #3B82F6; }
+    .border-green { border-left: 4px solid #10B981; }
+    .border-orange { border-left: 4px solid #F59E0B; }
+    .border-purple { border-left: 4px solid #8B5CF6; }
+    
+    /* Institutional KPI Cards */
     .kpi-card { 
-        background-color: transparent; 
-        padding: 0.3rem 0.2rem; 
+        background-color: #111827; 
+        border: 1px solid #1E293B;
+        padding: 16px 8px; 
         text-align: center; 
-        border-radius: 0;
+        border-radius: 8px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
     }
-    .kpi-icon { font-size: 1rem; display: inline-block; }
-    .kpi-value { font-size: 1rem; font-weight: 700; }
-    .kpi-label { color: #666; font-size: 0.55rem; text-transform: uppercase; letter-spacing: 0.5px; }
+    .kpi-icon { font-size: 1.2rem; margin-bottom: 4px; opacity: 0.8;}
+    .kpi-value { font-size: 1.25rem; font-weight: 700; color: #F8FAFC; letter-spacing: 0.5px;}
+    .kpi-label { color: #64748B; font-size: 0.65rem; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; margin-top: 6px; }
     
-    .stTabs [data-baseweb="tab-list"] { gap: 2px; }
-    .stTabs [data-baseweb="tab"] { padding: 2px 10px; font-size: 0.75rem; }
+    /* Tabs Styling */
+    .stTabs [data-baseweb="tab-list"] { background-color: #0A0E17; border-bottom: 1px solid #1E293B; gap: 24px;}
+    .stTabs [data-baseweb="tab"] { color: #94A3B8; padding-top: 10px; padding-bottom: 10px; font-weight: 500; font-size: 0.9rem;}
+    .stTabs [aria-selected="true"] { color: #3B82F6 !important; border-bottom: 2px solid #3B82F6 !important; }
     
-    div[data-testid="stVerticalBlock"] { gap: 0.2rem; }
-    div[data-testid="stHorizontalBlock"] { gap: 0.2rem; }
-    .stMarkdown { margin: 0; padding: 0; }
-    .element-container { margin: 0; padding: 0; }
+    /* Buttons */
+    .stButton>button { border-radius: 6px; font-weight: 500; border: 1px solid #334155; }
+    
+    hr { border-color: #1E293B; margin: 1.5rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -232,14 +275,12 @@ def save_signal(symbol, signal, entry, target, sl):
     except Exception as e:
         st.error(f"❌ Failed to save signal: {str(e)}")
 
-# ==================== FIXED: mark_alert_sent (NO ORDER BY / LIMIT IN UPDATE) ====================
 def mark_alert_sent(symbol, signal, entry_price):
     conn = get_conn()
     if conn is None:
         return
     try:
         with conn.session as s:
-            # Subquery se latest timestamp select karo, phir update karo
             s.execute(text("""
                 UPDATE signal_history 
                 SET alert_sent = TRUE 
@@ -622,18 +663,18 @@ def get_candle_status(df):
     prev = df.iloc[-2]
     
     if last['Close'] > last['Open']:
-        present_color = "🟢 Green (Bullish)"
-        present_emoji = "🟢"
+        present_color = "🟢 Bullish"
+        present_emoji = ""
     else:
-        present_color = "🔴 Red (Bearish)"
-        present_emoji = "🔴"
+        present_color = "🔴 Bearish"
+        present_emoji = ""
     
     if last['Close'] > prev['Close']:
-        next_prediction = "🟢 Bullish expected" if last['Close'] > last['Open'] else "🔄 Reversal possible"
-        next_emoji = "🟢" if last['Close'] > last['Open'] else "🔄"
+        next_prediction = "🟢 Bull Expected" if last['Close'] > last['Open'] else "🔄 Reversal Probable"
+        next_emoji = ""
     else:
-        next_prediction = "🔴 Bearish expected" if last['Close'] < last['Open'] else "🔄 Reversal possible"
-        next_emoji = "🔴" if last['Close'] < last['Open'] else "🔄"
+        next_prediction = "🔴 Bear Expected" if last['Close'] < last['Open'] else "🔄 Reversal Probable"
+        next_emoji = ""
     
     return present_color, present_emoji, next_prediction, next_emoji
 
@@ -780,7 +821,7 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
 
     structure_score, structure_signal = detect_market_structure(df, lookback=10)
     score += structure_score
-    reasons.append(f"🔹 SMC Structure: {structure_signal}")
+    reasons.append(f"SMC Structure: {structure_signal}")
     signal_details['structure_signal'] = structure_signal
 
     ob_low, ob_high, ob_signal = detect_order_blocks(df, lookback=5)
@@ -790,22 +831,22 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         signal_details['order_block_signal'] = ob_signal
         if "Bullish" in ob_signal:
             score += 2
-            reasons.append(f"🔹 {ob_signal}")
+            reasons.append(f"{ob_signal}")
         elif "Bearish" in ob_signal:
             score -= 2
-            reasons.append(f"🔹 {ob_signal}")
+            reasons.append(f"{ob_signal}")
 
     eqh, eql = detect_equal_highs_lows(df, lookback=30, threshold=0.001)
     if eqh:
         signal_details['eqh'] = eqh
         if price > eqh * 0.998 and price < eqh * 1.002:
             score -= 1
-            reasons.append(f"🔹 Near Equal High (Liquidity) @ {eqh:.2f}")
+            reasons.append(f"Near Equal High (Liquidity) @ {eqh:.2f}")
     if eql:
         signal_details['eql'] = eql
         if price > eql * 0.998 and price < eql * 1.002:
             score += 1
-            reasons.append(f"🔹 Near Equal Low (Liquidity) @ {eql:.2f}")
+            reasons.append(f"Near Equal Low (Liquidity) @ {eql:.2f}")
 
     fvg_top, fvg_bottom, fvg_signal = detect_fvg(df)
     if fvg_signal != "No FVG":
@@ -814,14 +855,14 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         signal_details['fvg_signal'] = fvg_signal
         if "Bullish" in fvg_signal:
             score += 1
-            reasons.append(f"🔹 {fvg_signal}")
+            reasons.append(f"{fvg_signal}")
         elif "Bearish" in fvg_signal:
             score -= 1
-            reasons.append(f"🔹 {fvg_signal}")
+            reasons.append(f"{fvg_signal}")
 
     zone_label, zone_score = detect_premium_discount(df, lookback=50)
     score += zone_score
-    reasons.append(f"🔹 Zone: {zone_label}")
+    reasons.append(f"Zone: {zone_label}")
 
     if symbol:
         news_sentiment, news_headlines = fetch_news_sentiment(symbol)
@@ -830,12 +871,12 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         
         if news_sentiment == "Bullish":
             score += 1
-            reasons.append(f"📰 News Sentiment: BULLISH (+1)")
+            reasons.append(f"News Sentiment: BULLISH (+1)")
         elif news_sentiment == "Bearish":
             score -= 1
-            reasons.append(f"📰 News Sentiment: BEARISH (-1)")
+            reasons.append(f"News Sentiment: BEARISH (-1)")
         else:
-            reasons.append(f"📰 News Sentiment: Neutral")
+            reasons.append(f"News Sentiment: Neutral")
     else:
         signal_details['news_sentiment'] = 'Neutral'
         signal_details['news_headlines'] = 'No Symbol'
@@ -847,12 +888,12 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         
         if whale_sentiment == "Bullish":
             score += 2
-            reasons.append(f"🐋 Whale: {whale_reason} (+2)")
+            reasons.append(f"Whale Data: {whale_reason} (+2)")
         elif whale_sentiment == "Bearish":
             score -= 2
-            reasons.append(f"🐋 Whale: {whale_reason} (-2)")
+            reasons.append(f"Whale Data: {whale_reason} (-2)")
         else:
-            reasons.append(f"🐋 Whale: {whale_reason}")
+            reasons.append(f"Whale Data: {whale_reason}")
         
         if "ETH" in symbol and "ETHERSCAN_API_KEY" in st.secrets:
             eth_details = fetch_eth_whale_details()
@@ -864,73 +905,73 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         h_price = float(h_close.iloc[-1])
         if h_price > h_ema50:
             mtf_bias = 2
-            reasons.append("✅ 1-Hour Trend: BULLISH (Price > EMA50)")
+            reasons.append("1H Trend: BULLISH (Price > EMA50)")
         else:
             mtf_bias = -2
-            reasons.append("❌ 1-Hour Trend: BEARISH (Price < EMA50)")
+            reasons.append("1H Trend: BEARISH (Price < EMA50)")
         score += mtf_bias
     else:
-        reasons.append("⚠️ Higher TF data missing, using only lower TF")
+        reasons.append("Higher TF data missing, using lower TF only")
 
     if price > last['EMA_9'] > last['EMA_21']:
         score += 2
-        reasons.append("✅ EMA Structure: Bullish (9>21)")
+        reasons.append("EMA Structure: Bullish (9>21)")
     elif price < last['EMA_9'] < last['EMA_21']:
         score -= 2
-        reasons.append("❌ EMA Structure: Bearish (9<21)")
+        reasons.append("EMA Structure: Bearish (9<21)")
     else:
-        reasons.append("➖ EMA Structure: Neutral")
+        reasons.append("EMA Structure: Neutral")
 
     rsi = float(last['RSI'])
     if rsi > 70:
         score -= 2
-        reasons.append(f"🟥 RSI Overbought ({rsi:.1f})")
+        reasons.append(f"RSI Overbought ({rsi:.1f})")
     elif rsi < 30:
         score += 2
-        reasons.append(f"🟩 RSI Oversold ({rsi:.1f})")
+        reasons.append(f"RSI Oversold ({rsi:.1f})")
     elif rsi > 55:
         score += 1
-        reasons.append(f"✅ RSI Bullish ({rsi:.1f})")
+        reasons.append(f"RSI Bullish ({rsi:.1f})")
     elif rsi < 45:
         score -= 1
-        reasons.append(f"❌ RSI Bearish ({rsi:.1f})")
+        reasons.append(f"RSI Bearish ({rsi:.1f})")
     else:
-        reasons.append(f"➖ RSI Neutral ({rsi:.1f})")
+        reasons.append(f"RSI Neutral ({rsi:.1f})")
 
     if last['MACD_Hist'] > 0:
         score += 1.5
-        reasons.append("✅ MACD Positive Histogram")
+        reasons.append("MACD Positive Histogram")
     else:
         score -= 1.5
-        reasons.append("❌ MACD Negative Histogram")
+        reasons.append("MACD Negative Histogram")
 
     vol_ma = float(last['Volume_MA'])
     vol_now = float(last['Volume'])
     if vol_ma > 0 and vol_now > vol_ma * 1.5:
         if score > 0:
             score += 1
-            reasons.append(f"📈 Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
+            reasons.append(f"Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
         elif score < 0:
             score -= 1
-            reasons.append(f"📉 Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
+            reasons.append(f"Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
         else:
-            reasons.append(f"📊 Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
+            reasons.append(f"Volume Spike ({vol_now/vol_ma:.1f}x Avg)")
     else:
-        reasons.append("➖ Volume normal")
+        reasons.append("Volume normal")
 
     patterns = detect_candle_patterns(df)
     if patterns:
         for p in patterns:
             if "Bullish" in p or "Buy" in p:
                 score += 1.5
-                reasons.append(f"📊 {p}")
+                reasons.append(f"{p}")
             elif "Bearish" in p or "Sell" in p:
                 score -= 1.5
-                reasons.append(f"📊 {p}")
+                reasons.append(f"{p}")
             else:
-                reasons.append(f"📊 {p}")
+                reasons.append(f"{p}")
     else:
-        reasons.append("➖ No strong pattern detected")
+        reasons.append("No strong pattern detected")
 
     atr = float(last['ATR'])
     if atr / price < 0.005:
@@ -954,13 +995,13 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     rr_ratio = round(2.0 / 2.0, 2)
 
     if "BUY" in signal:
-        expected = f"🟢 NEXT CANDLE LIKELY BULLISH (Green). Target: {tp_price:.2f}"
-        pullback = f"📉 Small retrace to {price - (0.5*atr):.2f} possible before up move."
+        expected = f"Next Candle Likely Bullish. Target: {tp_price:.2f}"
+        pullback = f"Retrace to {price - (0.5*atr):.2f} possible before up move."
     elif "SELL" in signal:
-        expected = f"🔴 NEXT CANDLE LIKELY BEARISH (Red). Target: {tp_price:.2f}"
-        pullback = f"📈 Small bounce to {price + (0.5*atr):.2f} possible before down move."
+        expected = f"Next Candle Likely Bearish. Target: {tp_price:.2f}"
+        pullback = f"Bounce to {price + (0.5*atr):.2f} possible before down move."
     else:
-        expected = "⏳ Direction unclear. Better to WAIT for break of S/R."
+        expected = "Direction unclear. Wait for S/R break."
         pullback = "No active trade."
         sl_price = price
         tp_price = price
@@ -1012,31 +1053,29 @@ def analyze_chart_with_gemini(image, symbol, tf):
 # ==================== UI ====================
 col_header, col_spacer = st.columns([1, 5])
 with col_header:
-    st.markdown('<span class="main-header">🚀 Pro Max Trading Signals</span>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">Pro Max Terminal</div>', unsafe_allow_html=True)
 
-st.caption(f"📅 {get_pakistan_time()} | SMC + News + Whale Tracker | Neon DB")
+st.caption(f"📅 {get_pakistan_time()} | SMC • News • Whale Tracker")
 
 btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 4])
 with btn_col1:
     if st.session_state.alerts_enabled:
-        if st.button("🔔 Alerts: ON", key="alert_toggle", help="Click to turn OFF alerts"):
+        if st.button("🔔 Alerts Active", key="alert_toggle"):
             st.session_state.alerts_enabled = False
             st.rerun()
     else:
-        if st.button("🔕 Alerts: OFF", key="alert_toggle", help="Click to turn ON alerts"):
+        if st.button("🔕 Alerts Muted", key="alert_toggle"):
             st.session_state.alerts_enabled = True
             st.rerun()
 with btn_col2:
-    if st.button("🔄 Refresh Data", key="refresh_btn"):
+    if st.button("🔄 Sync Data", key="refresh_btn"):
         st.cache_data.clear()
         st.rerun()
 
 MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "USD/JPY": "USDJPY=X", "NAS100": "NQ=F"}
 
 db_initialized = init_db()
-if db_initialized:
-    st.success("✅ Database connected successfully!")
-else:
+if not db_initialized:
     st.warning("⚠️ Database connection failed. Check secrets configuration.")
 
 cols = st.columns(3)
@@ -1051,13 +1090,23 @@ for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
             temp_analysis = calculate_advanced_signal(qdf, None, ticker)
             if temp_analysis:
                 sig = temp_analysis['signal']
+        
+        pct_color = "#10B981" if pct >= 0 else "#EF4444"
+        badge_cls = temp_analysis['badge_class'] if temp_analysis else 'neutral'
+        
         st.markdown(
-            f"<div class='symbol-card'><strong>{name}</strong><br><span class='metric-value'>{price:,.2f}</span> "
-            f"<span style='color:{'#00c853' if pct >= 0 else '#f44336'};'> {pct:+.2f}%</span><br>"
-            f"<span class='signal-badge {temp_analysis['badge_class'] if temp_analysis else 'neutral'}'>{sig}</span></div>",
-            unsafe_allow_html=True
+            f"""
+            <div class='symbol-card'>
+                <strong>{name}</strong>
+                <div style="margin: 8px 0;">
+                    <span class='metric-value'>{price:,.2f}</span>
+                    <span style='color:{pct_color}; font-size: 0.9rem; font-weight: 500; margin-left: 6px;'>{pct:+.2f}%</span>
+                </div>
+                <span class='signal-badge {badge_cls}'>{sig}</span>
+            </div>
+            """, unsafe_allow_html=True
         )
-        if st.button(f"Analyze", key=f"btn_{idx}"):
+        if st.button(f"Load Terminal", key=f"btn_{idx}", use_container_width=True):
             st.session_state.selected_symbol = ticker
             st.session_state.selected_name = name
             st.rerun()
@@ -1066,241 +1115,205 @@ if st.session_state.get("selected_symbol"):
     ticker = st.session_state.selected_symbol
     name = st.session_state.get("selected_name", ticker)
     st.divider()
-    st.subheader(f"📊 {name} ({ticker})")
-    st.caption(f"📡 Data Source: {st.session_state.data_source}")
     
-    tf_lower = st.selectbox("Lower Timeframe (Entry)", ["5m", "15m", "30m"], index=1)
-    tf_higher = st.selectbox("Higher Timeframe (Trend)", ["1h", "4h"], index=0)
+    st.markdown(f"<h3 style='margin-bottom:0;'>{name} <span style='color:#64748B; font-size:1.2rem; font-weight:400;'>| {ticker}</span></h3>", unsafe_allow_html=True)
+    st.caption(f"Data Feed: {st.session_state.data_source}")
+    
+    col_tf1, col_tf2, _ = st.columns([1, 1, 3])
+    with col_tf1:
+        tf_lower = st.selectbox("Entry Timeframe", ["5m", "15m", "30m"], index=1)
+    with col_tf2:
+        tf_higher = st.selectbox("Trend Timeframe", ["1h", "4h"], index=0)
     
     df_lower = fetch_ohlcv(ticker, interval=tf_lower, period="3d")
     df_higher = fetch_ohlcv(ticker, interval=tf_higher, period="5d")
     
     if df_lower is None or len(df_lower) < 30:
-        st.error("Data nahi aa raha. Kuch der baad refresh karein.")
+        st.error("Insufficient market data. Please wait and resync.")
         st.stop()
     
     present_color, present_emoji, next_prediction, next_emoji = get_candle_status(df_lower)
-    
     analysis = calculate_advanced_signal(df_lower, df_higher, ticker)
     
     if analysis:
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
-            save_signal(
-                symbol=ticker,
-                signal=analysis['signal'],
-                entry=analysis['last_price'],
-                target=analysis['tp'],
-                sl=analysis['sl']
-            )
-        
+            save_signal(ticker, analysis['signal'], analysis['last_price'], analysis['tp'], analysis['sl'])
         if db_initialized:
             update_old_signals(ticker, df_lower)
         
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             if st.session_state.alerts_enabled:
                 already_sent = check_alert_sent(ticker, analysis['signal'], analysis['last_price'])
-                
                 if not already_sent:
-                    telegram_sent = send_telegram_alert(
-                        symbol=name,
-                        signal=analysis['signal'],
-                        price=analysis['last_price'],
-                        tp=analysis['tp'],
-                        sl=analysis['sl']
-                    )
-                    email_sent = send_email_alert(
-                        symbol=name,
-                        signal=analysis['signal'],
-                        price=analysis['last_price'],
-                        tp=analysis['tp'],
-                        sl=analysis['sl']
-                    )
+                    telegram_sent = send_telegram_alert(name, analysis['signal'], analysis['last_price'], analysis['tp'], analysis['sl'])
+                    email_sent = send_email_alert(name, analysis['signal'], analysis['last_price'], analysis['tp'], analysis['sl'])
                     if telegram_sent and email_sent:
-                        st.success("✅ Alerts sent to Telegram & Email!")
                         mark_alert_sent(ticker, analysis['signal'], analysis['last_price'])
-                    else:
-                        st.warning("⚠️ Alerts partially failed. Check logs.")
-                else:
-                    st.info("ℹ️ Signal already alerted. Duplicate skipped.")
-            else:
-                st.info("🔕 Alerts are OFF. Signal saved in DB only.")
         
         # ==================== KPI CARDS ====================
-        st.markdown("### 📊 Key Metrics")
+        st.markdown("<br>", unsafe_allow_html=True)
         kpi_cols = st.columns(5)
+        
         with kpi_cols[0]:
             st.markdown(f"""
             <div class="kpi-card">
                 <span class="kpi-icon">💰</span>
                 <span class="kpi-value">{analysis['last_price']:,.2f}</span>
-                <div class="kpi-label">PRICE</div>
+                <div class="kpi-label">Current Price</div>
             </div>
             """, unsafe_allow_html=True)
+            
         with kpi_cols[1]:
-            badge_color = "#00c853" if "BUY" in analysis['signal'] else "#f44336" if "SELL" in analysis['signal'] else "#ff9800"
+            badge_color = "#10B981" if "BUY" in analysis['signal'] else "#EF4444" if "SELL" in analysis['signal'] else "#F59E0B"
             st.markdown(f"""
             <div class="kpi-card">
-                <span class="kpi-icon">📊</span>
+                <span class="kpi-icon">🎯</span>
                 <span class="kpi-value" style="color:{badge_color}">{analysis['signal']}</span>
-                <div class="kpi-label">SIGNAL</div>
+                <div class="kpi-label">Active Signal</div>
             </div>
             """, unsafe_allow_html=True)
+            
         with kpi_cols[2]:
-            rsi_color = "#00c853" if analysis['rsi'] < 30 else "#f44336" if analysis['rsi'] > 70 else "#ff9800"
+            rsi_color = "#10B981" if analysis['rsi'] < 30 else "#EF4444" if analysis['rsi'] > 70 else "#94A3B8"
             st.markdown(f"""
             <div class="kpi-card">
                 <span class="kpi-icon">📈</span>
                 <span class="kpi-value" style="color:{rsi_color}">{analysis['rsi']}</span>
-                <div class="kpi-label">RSI</div>
+                <div class="kpi-label">RSI Indicator</div>
             </div>
             """, unsafe_allow_html=True)
+            
         with kpi_cols[3]:
             st.markdown(f"""
             <div class="kpi-card">
                 <span class="kpi-icon">⚡</span>
                 <span class="kpi-value">{analysis['score']}</span>
-                <div class="kpi-label">SCORE</div>
+                <div class="kpi-label">Confluence Score</div>
             </div>
             """, unsafe_allow_html=True)
+            
         with kpi_cols[4]:
             winrate, total = get_stats(ticker) if db_initialized else (None, 0)
-            wr = f"{winrate}%" if winrate is not None else "N/A"
+            wr_str = f"{winrate}%" if winrate is not None else "--"
             st.markdown(f"""
             <div class="kpi-card">
                 <span class="kpi-icon">🏆</span>
-                <span class="kpi-value">{wr}</span>
-                <div class="kpi-label">WIN RATE</div>
+                <span class="kpi-value">{wr_str}</span>
+                <div class="kpi-label">Win Rate</div>
             </div>
             """, unsafe_allow_html=True)
 
+        st.markdown("<br>", unsafe_allow_html=True)
+
         # ==================== TABS ====================
-        tab1, tab2, tab3 = st.tabs(["🧠 SMC + News", "🐋 Whale Tracker", "📜 Backtest"])
+        tab1, tab2, tab3 = st.tabs(["Market Context", "Whale Intelligence", "System Backtest"])
         
         with tab1:
-            st.markdown("### 🧠 Smart Money Concepts (SMC)")
-            structure = analysis.get('structure_signal', 'N/A')
-            st.markdown(
-                f"""<div class='smc-box'>
-                <b>Structure:</b> {structure}<br>
-                <b>Order Block:</b> {analysis.get('order_block_signal', 'None')}<br>
-                <b>FVG:</b> {analysis.get('fvg_signal', 'None')}<br>
-                <b>EQH:</b> {analysis.get('eqh', 'None')} | <b>EQL:</b> {analysis.get('eql', 'None')}
-                </div>""", unsafe_allow_html=True
-            )
+            col1, col2 = st.columns(2)
             
-            st.markdown("### 📰 News Sentiment")
-            sentiment = analysis.get('news_sentiment', 'Neutral')
-            headlines = analysis.get('news_headlines', 'No News')
-            if isinstance(headlines, list):
-                headlines = headlines[0] if headlines else "No News"
-            
-            col1, col2 = st.columns([1, 3])
             with col1:
-                if sentiment == "Bullish":
-                    st.success(f"🟢 {sentiment}")
-                elif sentiment == "Bearish":
-                    st.error(f"🔴 {sentiment}")
-                else:
-                    st.info(f"⚪ {sentiment}")
+                st.markdown("#### Smart Money Concepts (SMC)")
+                st.markdown(
+                    f"""<div class='modern-box border-purple'>
+                    <div style='margin-bottom: 4px'><b>Structure:</b> {analysis.get('structure_signal', 'N/A')}</div>
+                    <div style='margin-bottom: 4px'><b>Order Block:</b> {analysis.get('order_block_signal', 'None')}</div>
+                    <div style='margin-bottom: 4px'><b>Fair Value Gap:</b> {analysis.get('fvg_signal', 'None')}</div>
+                    <div><b>EQH:</b> {analysis.get('eqh', 'None')} | <b>EQL:</b> {analysis.get('eql', 'None')}</div>
+                    </div>""", unsafe_allow_html=True
+                )
+                
+                st.markdown("#### Trend & Momentum")
+                st.markdown(
+                    f"""<div class='modern-box border-blue'>
+                    <div style='margin-bottom: 4px'><b>Higher TF Bias:</b> {analysis['mtf_bias']}</div>
+                    <div style='margin-bottom: 4px'><b>Candle State:</b> {present_color}</div>
+                    <div><b>Prediction:</b> {next_prediction}</div>
+                    </div>""", unsafe_allow_html=True
+                )
+
             with col2:
-                if headlines and headlines not in ["No News", "No Symbol"]:
-                    st.caption(f"📌 {headlines[:80]}...")
-                else:
-                    st.caption("📌 No recent news")
-            
-            st.markdown("### 📊 Multi-Timeframe Trend")
-            st.markdown(f"<div class='mtf-box'><b>Trend:</b> {analysis['mtf_bias']}<br><b>Total Score:</b> {analysis['score']} / 10</div>", unsafe_allow_html=True)
-            
-            st.markdown("### 🕯️ Candle Status")
-            st.markdown(f"""
-            <div class="candle-status">
-                <b>Present:</b> {present_emoji} {present_color}<br>
-                <b>Next:</b> {next_emoji} {next_prediction}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.markdown("### 🎯 Risk Management")
-            st.info(
-                f"- **Stop Loss (SL):** {analysis['sl']} (2.0x ATR)\n"
-                f"- **Take Profit (TP):** {analysis['tp']} (2.0x ATR)\n"
-                f"- **Risk:Reward:** 1 : {analysis['rr_ratio']}"
-            )
-            
-            with st.expander("🧠 Technical Reasons (Score Breakup)"):
+                st.markdown("#### Risk Parameters")
+                st.markdown(
+                    f"""<div class='modern-box border-orange'>
+                    <div style='margin-bottom: 4px'><b>Stop Loss:</b> {analysis['sl']}</div>
+                    <div style='margin-bottom: 4px'><b>Take Profit:</b> {analysis['tp']}</div>
+                    <div><b>Risk/Reward:</b> 1 : {analysis['rr_ratio']}</div>
+                    </div>""", unsafe_allow_html=True
+                )
+                
+                st.markdown("#### Catalyst (News)")
+                sentiment = analysis.get('news_sentiment', 'Neutral')
+                headlines = analysis.get('news_headlines', 'No News')
+                if isinstance(headlines, list):
+                    headlines = headlines[0] if headlines else "No recent headlines"
+                
+                s_color = "border-green" if sentiment == "Bullish" else "border-red" if sentiment == "Bearish" else "border-blue"
+                st.markdown(
+                    f"""<div class='modern-box {s_color}'>
+                    <div style='margin-bottom: 4px'><b>Bias:</b> {sentiment}</div>
+                    <div style='font-size: 0.8rem; color: #94A3B8;'>{headlines[:90]}...</div>
+                    </div>""", unsafe_allow_html=True
+                )
+
+            with st.expander("View Algorithmic Reasoning Log"):
                 for r in analysis['reasons']:
-                    st.write(f"- {r}")
-                st.caption(f"Total Score: {analysis['score']}")
+                    st.write(f"• {r}")
         
         with tab2:
-            st.markdown("### 🐋 Whale Tracker")
-            
+            st.markdown("#### Institutional Order Flow")
             whale_sentiment = analysis.get('whale_sentiment', 'Neutral')
             whale_reason = analysis.get('whale_reason', 'No whale data')
             
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                if whale_sentiment == "Bullish":
-                    st.success(f"🟢 {whale_sentiment}")
-                elif whale_sentiment == "Bearish":
-                    st.error(f"🔴 {whale_sentiment}")
-                else:
-                    st.info(f"⚪ {whale_sentiment}")
-            with col2:
-                st.caption(whale_reason)
-            
-            st.divider()
+            w_color = "border-green" if whale_sentiment == "Bullish" else "border-red" if whale_sentiment == "Bearish" else "border-blue"
+            st.markdown(
+                f"""<div class='modern-box {w_color}'>
+                <div style='margin-bottom: 4px; font-weight: 600;'>{whale_sentiment.upper()}</div>
+                <div>{whale_reason}</div>
+                </div>""", unsafe_allow_html=True
+            )
             
             if "ETH" in ticker:
-                eth_details = analysis.get('eth_whale_details', 'No ETH data')
-                st.markdown("#### 🏦 Top ETH Whales")
-                st.code(eth_details, language='text')
-            else:
-                st.info("📝 Whale tracking available for **BTC** and **ETH**")
-            
-            st.divider()
-            st.caption("🟢 Bullish = More buying | 🔴 Bearish = More selling | ⚪ Neutral = Balanced")
+                st.markdown("#### Tracked Wallets (ETH)")
+                st.code(analysis.get('eth_whale_details', 'No ETH data'), language='text')
         
         with tab3:
-            st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
+            st.markdown("#### Historical Performance")
             if db_initialized:
                 winrate, total = get_stats(ticker)
                 if winrate is not None:
-                    st.progress(winrate / 100, text=f"Win Rate (Last {total} signals): {winrate}%")
+                    st.progress(winrate / 100, text=f"Last {total} Signals Win Rate: {winrate}%")
                     if winrate >= 60:
-                        st.success("✅ System consistent perform kar raha hai!")
+                        st.success("Edge Validated: System maintaining positive expectancy.")
                     else:
-                        st.warning("⚠️ System ko optimize karne ki zaroorat hai.")
+                        st.warning("Drawdown Phase: Exercise strict risk management.")
                 else:
-                    st.info("📭 Abhi koi closed signal nahi. Pehle kuch trades complete hone dein.")
+                    st.info("System initializing. Awaiting closed trade data.")
             else:
-                st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
-            st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)")
+                st.warning("Database disconnected.")
         
-        st.markdown("### 🤖 Grok Text Analysis")
-        if st.button("Ask Grok", key="grok_main"):
-            with st.spinner("Grok soch raha hai..."):
-                resp = get_grok_analysis(name, tf_lower, analysis, analysis['last_price'])
-            st.markdown(
-                f"<div class='mtf-box' style='border-left-color: #4a90e2;'>{resp}</div>",
-                unsafe_allow_html=True
-            )
+        st.divider()
+        st.markdown("### AI Co-Pilot Analysis")
+        col_ai1, col_ai2 = st.columns(2)
         
-        st.markdown("### 📸 Gemini Vision")
-        st.write("Current candle ka screenshot upload karein.")
-        uploaded = st.file_uploader(f"Upload {name} ({tf_lower}) chart", type=["png", "jpg"], key="gemini_upload")
-        if uploaded:
-            img = Image.open(uploaded)
-            st.image(img, caption="Uploaded Chart", use_container_width=True)
-            if st.button("🔮 Predict Next Candle via Gemini", key="gemini_main"):
-                with st.spinner("Gemini analyzing..."):
-                    gem_res = analyze_chart_with_gemini(img, name, tf_lower)
-                st.markdown(
-                    f"<div class='sr-box' style='border-left-color: #00ff9f;'>{gem_res}</div>",
-                    unsafe_allow_html=True
-                )
-    else:
-        st.error("Insufficient data for analysis. Try larger timeframe.")
-else:
-    st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
+        with col_ai1:
+            st.markdown("#### Quantitative Context (Grok)")
+            if st.button("Generate Grok Report", key="grok_main"):
+                with st.spinner("Processing context..."):
+                    resp = get_grok_analysis(name, tf_lower, analysis, analysis['last_price'])
+                st.markdown(f"<div class='modern-box border-blue'>{resp}</div>", unsafe_allow_html=True)
+                
+        with col_ai2:
+            st.markdown("#### Visual Analysis (Gemini)")
+            uploaded = st.file_uploader(f"Upload Chart ({tf_lower})", type=["png", "jpg"], label_visibility="collapsed")
+            if uploaded:
+                img = Image.open(uploaded)
+                st.image(img, use_container_width=True)
+                if st.button("Analyze Image", key="gemini_main"):
+                    with st.spinner("Analyzing structures..."):
+                        gem_res = analyze_chart_with_gemini(img, name, tf_lower)
+                    st.markdown(f"<div class='modern-box border-purple'>{gem_res}</div>", unsafe_allow_html=True)
 
-st.caption("⚡ Advanced System v7.3 | SMC + News + Whale Tracker + KPI Cards | Neon DB (Permanent)")
+    else:
+        st.error("Insufficient volatility or data points to calculate reliable signals.")
+else:
+    st.info("Select an instrument from the terminal overhead to begin analysis.")
