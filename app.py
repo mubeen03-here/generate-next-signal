@@ -13,7 +13,6 @@ import requests
 import smtplib
 from email.message import EmailMessage
 from alpha_vantage.timeseries import TimeSeries
-import plotly.graph_objects as go  # <--- Chart ke liye import
 
 # ==================== API KEYS SETUP ====================
 if "GROQ_API_KEY" in st.secrets:
@@ -51,6 +50,10 @@ st.markdown("""
     .candle-status { background-color: #1a1a2e; border-left: 5px solid #ffaa00; padding: 8px 15px; border-radius: 8px; display: inline-block; }
     .smc-box { background-color: #1a1a3e; border-left: 5px solid #8866ff; padding: 10px; border-radius: 8px; margin: 5px 0; }
     .whale-box { background-color: #1a1a2a; border-left: 5px solid #ffaa44; padding: 10px; border-radius: 8px; margin: 5px 0; }
+    .kpi-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 1rem; text-align: center; }
+    .kpi-icon { font-size: 2rem; }
+    .kpi-value { font-size: 1.6rem; font-weight: 700; }
+    .kpi-label { color: #888; font-size: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -61,12 +64,6 @@ if "last_price_check" not in st.session_state:
     st.session_state.last_price_check = {}
 if "data_source" not in st.session_state:
     st.session_state.data_source = "Yahoo Finance"
-if "last_alert_time" not in st.session_state:
-    st.session_state.last_alert_time = {}
-if "cooldown_settings" not in st.session_state:
-    st.session_state.cooldown_settings = {
-        "5m": 5, "15m": 10, "30m": 15, "1h": 30, "4h": 60
-    }
 if "alerts_enabled" not in st.session_state:
     st.session_state.alerts_enabled = True
 if "selected_symbol" not in st.session_state:
@@ -77,21 +74,6 @@ if "selected_name" not in st.session_state:
 def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
-
-# ==================== COOLDOWN CHECK ====================
-def check_alert_cooldown(ticker, tf):
-    cooldown_minutes = st.session_state.cooldown_settings.get(tf, 10)
-    current_time = time.time()
-    
-    if ticker in st.session_state.last_alert_time:
-        time_diff = (current_time - st.session_state.last_alert_time[ticker]) / 60
-        if time_diff < cooldown_minutes:
-            remaining = int(cooldown_minutes - time_diff)
-            return False, remaining
-    return True, 0
-
-def update_alert_cooldown(ticker):
-    st.session_state.last_alert_time[ticker] = time.time()
 
 # ==================== TELEGRAM ALERT ====================
 def send_telegram_alert(symbol, signal, price, tp, sl):
@@ -173,7 +155,8 @@ def init_db():
                         target_price REAL,
                         stop_loss REAL,
                         status TEXT DEFAULT 'PENDING',
-                        result TEXT
+                        result TEXT,
+                        alert_sent BOOLEAN DEFAULT FALSE
                     )
                 """))
                 s.commit()
@@ -194,8 +177,8 @@ def save_signal(symbol, signal, entry, target, sl):
         with conn.session as s:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             s.execute(text("""
-                INSERT INTO signal_history (timestamp, symbol, signal, entry_price, target_price, stop_loss)
-                VALUES (:ts, :sym, :sig, :entry, :target, :sl)
+                INSERT INTO signal_history (timestamp, symbol, signal, entry_price, target_price, stop_loss, alert_sent)
+                VALUES (:ts, :sym, :sig, :entry, :target, :sl, FALSE)
             """), {
                 "ts": now,
                 "sym": symbol,
@@ -208,7 +191,23 @@ def save_signal(symbol, signal, entry, target, sl):
     except Exception as e:
         st.error(f"❌ Failed to save signal: {str(e)}")
 
-# ==================== AUTO BACKTEST ====================
+def mark_alert_sent(symbol, signal, entry_price):
+    conn = get_conn()
+    if conn is None:
+        return
+    try:
+        with conn.session as s:
+            # Find latest matching signal and mark alert_sent = TRUE
+            s.execute(text("""
+                UPDATE signal_history 
+                SET alert_sent = TRUE 
+                WHERE symbol = :sym AND signal = :sig AND entry_price = :price AND alert_sent = FALSE
+                ORDER BY timestamp DESC LIMIT 1
+            """), {"sym": symbol, "sig": signal, "price": entry_price})
+            s.commit()
+    except Exception as e:
+        st.error(f"❌ Failed to mark alert sent: {str(e)}")
+
 def update_old_signals(symbol, df):
     conn = get_conn()
     if conn is None:
@@ -452,7 +451,6 @@ def fetch_news_sentiment(symbol):
 @st.cache_data(ttl=180, show_spinner=False)
 def fetch_whale_data(symbol):
     try:
-        # Try MCP first
         import mcp
         MCP_SERVER = "https://mcp.swisswhaleintelligence.com/mcp"
         
@@ -489,7 +487,6 @@ def fetch_whale_data(symbol):
             else:
                 return "Neutral", "Whale flow balanced"
     except:
-        # Fallback to Blockchain.com for BTC
         try:
             if "BTC" in symbol:
                 url = "https://blockchain.info/unconfirmed-transactions?format=json"
@@ -672,7 +669,7 @@ def detect_candle_patterns(df):
         patterns.append("🔥 Bullish Marubozu (Strong)" if last['Close'] > last['Open'] else "💧 Bearish Marubozu (Strong)")
     return patterns
 
-# ==================== SIGNAL ENGINE (WITH SMC + NEWS + WHALE) ====================
+# ==================== SIGNAL ENGINE ====================
 def calculate_advanced_signal(df, df_higher=None, symbol=""):
     if df is None or len(df) < 40:
         return None
@@ -717,7 +714,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     signal_details = {}
     mtf_bias = 0
 
-    # ==================== SMC LOGIC ====================
     structure_score, structure_signal = detect_market_structure(df, lookback=10)
     score += structure_score
     reasons.append(f"🔹 SMC Structure: {structure_signal}")
@@ -763,7 +759,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     score += zone_score
     reasons.append(f"🔹 Zone: {zone_label}")
 
-    # ==================== NEWS SENTIMENT SCORE ====================
     if symbol:
         news_sentiment, news_headlines = fetch_news_sentiment(symbol)
         signal_details['news_sentiment'] = news_sentiment
@@ -781,7 +776,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         signal_details['news_sentiment'] = 'Neutral'
         signal_details['news_headlines'] = 'No Symbol'
 
-    # ==================== WHALE TRACKING SCORE ====================
     if symbol:
         whale_sentiment, whale_reason = fetch_whale_data(symbol)
         signal_details['whale_sentiment'] = whale_sentiment
@@ -800,7 +794,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
             eth_details = fetch_eth_whale_details()
             signal_details['eth_whale_details'] = eth_details
 
-    # ==================== MTF TREND ====================
     if df_higher is not None and len(df_higher) > 20:
         h_close = df_higher['Close']
         h_ema50 = h_close.ewm(span=50, adjust=False).mean().iloc[-1]
@@ -815,7 +808,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     else:
         reasons.append("⚠️ Higher TF data missing, using only lower TF")
 
-    # ==================== EMA STRUCTURE ====================
     if price > last['EMA_9'] > last['EMA_21']:
         score += 2
         reasons.append("✅ EMA Structure: Bullish (9>21)")
@@ -825,7 +817,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     else:
         reasons.append("➖ EMA Structure: Neutral")
 
-    # ==================== RSI ====================
     rsi = float(last['RSI'])
     if rsi > 70:
         score -= 2
@@ -842,7 +833,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     else:
         reasons.append(f"➖ RSI Neutral ({rsi:.1f})")
 
-    # ==================== MACD ====================
     if last['MACD_Hist'] > 0:
         score += 1.5
         reasons.append("✅ MACD Positive Histogram")
@@ -850,7 +840,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         score -= 1.5
         reasons.append("❌ MACD Negative Histogram")
 
-    # ==================== VOLUME SPIKE ====================
     vol_ma = float(last['Volume_MA'])
     vol_now = float(last['Volume'])
     if vol_ma > 0 and vol_now > vol_ma * 1.5:
@@ -865,7 +854,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     else:
         reasons.append("➖ Volume normal")
 
-    # ==================== CANDLE PATTERNS ====================
     patterns = detect_candle_patterns(df)
     if patterns:
         for p in patterns:
@@ -880,7 +868,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
     else:
         reasons.append("➖ No strong pattern detected")
 
-    # ==================== FINAL SCORE ====================
     atr = float(last['ATR'])
     if atr / price < 0.005:
         threshold_buy, threshold_sell = 3.5, -3.5
@@ -962,7 +949,7 @@ def analyze_chart_with_gemini(image, symbol, tf):
 st.markdown('<h1 class="main-header">🚀 Pro Max Trading Signals</h1>', unsafe_allow_html=True)
 st.caption(f"🇵🇰 {get_pakistan_time()} | SMC + News + Whale Tracker | Neon DB")
 
-col1, col2, col3 = st.columns([1, 1, 2])
+col1, col2 = st.columns([1, 1])
 with col1:
     if st.session_state.alerts_enabled:
         if st.button("🔔 Alerts: ON", key="alert_toggle", help="Click to turn OFF alerts (Telegram/Email)"):
@@ -977,20 +964,6 @@ with col2:
     if st.button("🔄 Refresh Data & Backtest"):
         st.cache_data.clear()
         st.rerun()
-
-with st.expander("⚙️ Cooldown Settings (Telegram & Email Alerts Only)"):
-    st.info("⏳ Cooldown sirf Telegram aur Email alerts ke liye hai. Dashboard signals hamesha generate honge.")
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.session_state.cooldown_settings["5m"] = st.number_input("5m", min_value=1, max_value=30, value=st.session_state.cooldown_settings["5m"])
-    with col2:
-        st.session_state.cooldown_settings["15m"] = st.number_input("15m", min_value=1, max_value=30, value=st.session_state.cooldown_settings["15m"])
-    with col3:
-        st.session_state.cooldown_settings["30m"] = st.number_input("30m", min_value=1, max_value=60, value=st.session_state.cooldown_settings["30m"])
-    with col4:
-        st.session_state.cooldown_settings["1h"] = st.number_input("1h", min_value=1, max_value=120, value=st.session_state.cooldown_settings["1h"])
-    with col5:
-        st.session_state.cooldown_settings["4h"] = st.number_input("4h", min_value=1, max_value=240, value=st.session_state.cooldown_settings["4h"])
 
 MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "USD/JPY": "USDJPY=X", "NAS100": "NQ=F"}
 
@@ -1045,9 +1018,7 @@ if st.session_state.get("selected_symbol"):
     analysis = calculate_advanced_signal(df_lower, df_higher, ticker)
     
     if analysis:
-        if len(df_lower) > 2:
-            st.session_state.last_price_check[ticker] = float(df_lower['Close'].iloc[-1])
-        
+        # ---- SAVE SIGNAL ----
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             save_signal(
                 symbol=ticker,
@@ -1057,174 +1028,108 @@ if st.session_state.get("selected_symbol"):
                 sl=analysis['sl']
             )
         
+        # ---- UPDATE OLD SIGNALS ----
         if db_initialized:
             update_old_signals(ticker, df_lower)
         
+        # ---- SEND ALERTS (ONLY IF NEW, NOT SENT BEFORE) ----
         if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"] and db_initialized:
             if st.session_state.alerts_enabled:
-                can_alert, remaining = check_alert_cooldown(ticker, tf_lower)
-                
-                if can_alert:
-                    telegram_sent = send_telegram_alert(
-                        symbol=name,
-                        signal=analysis['signal'],
-                        price=analysis['last_price'],
-                        tp=analysis['tp'],
-                        sl=analysis['sl']
-                    )
-                    email_sent = send_email_alert(
-                        symbol=name,
-                        signal=analysis['signal'],
-                        price=analysis['last_price'],
-                        tp=analysis['tp'],
-                        sl=analysis['sl']
-                    )
-                    if telegram_sent and email_sent:
-                        st.success("✅ Alerts sent to Telegram & Email!")
-                        update_alert_cooldown(ticker)
-                    else:
-                        st.warning("⚠️ Alerts partially failed. Check logs.")
-                else:
-                    st.info(f"⏳ Alerts skipped due to cooldown. Next alerts available after {remaining} minutes. (Signal saved in DB)")
+                # Check if alert already sent for this signal (check last 5 minutes)
+                conn = get_conn()
+                if conn:
+                    try:
+                        with conn.session as s:
+                            # Check if this specific signal was already sent recently
+                            check = s.execute(text("""
+                                SELECT id FROM signal_history 
+                                WHERE symbol = :sym AND signal = :sig 
+                                AND entry_price = :price 
+                                AND alert_sent = TRUE
+                                ORDER BY timestamp DESC LIMIT 1
+                            """), {"sym": ticker, "sig": analysis['signal'], "price": analysis['last_price']}).fetchone()
+                            
+                            if not check:
+                                # Not sent yet, send alerts
+                                telegram_sent = send_telegram_alert(
+                                    symbol=name,
+                                    signal=analysis['signal'],
+                                    price=analysis['last_price'],
+                                    tp=analysis['tp'],
+                                    sl=analysis['sl']
+                                )
+                                email_sent = send_email_alert(
+                                    symbol=name,
+                                    signal=analysis['signal'],
+                                    price=analysis['last_price'],
+                                    tp=analysis['tp'],
+                                    sl=analysis['sl']
+                                )
+                                if telegram_sent and email_sent:
+                                    st.success("✅ Alerts sent to Telegram & Email!")
+                                    # Mark alert as sent
+                                    mark_alert_sent(ticker, analysis['signal'], analysis['last_price'])
+                                else:
+                                    st.warning("⚠️ Alerts partially failed. Check logs.")
+                            else:
+                                st.info("ℹ️ Signal already alerted recently. Duplicate skipped.")
+                    except Exception as e:
+                        st.warning(f"⚠️ Alert check failed: {str(e)}")
             else:
-                st.info("🔕 Alerts are OFF. Signal saved in DB only. Turn ON alerts to receive Telegram/Email.")
+                st.info("🔕 Alerts are OFF. Signal saved in DB only.")
         
-        # ==================== TABS ====================
-        tab1, tab2, tab3 = st.tabs(["📊 Technical", "🧠 SMC + News", "🐋 Whale Tracker"])
-        
-        with tab1:
-            st.markdown("### 📊 Technical Analysis")
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("💰 Price", f"{analysis['last_price']:,}")
-            c2.metric("📊 Signal", analysis['signal'])
-            c3.metric("📈 RSI", analysis['rsi'])
-            c4.metric("⚡ ATR", analysis['atr'])
-            
-            st.markdown("### 🎯 Risk Management")
-            st.info(
-                f"- **Stop Loss (SL):** {analysis['sl']} (2.0x ATR)\n"
-                f"- **Take Profit (TP):** {analysis['tp']} (2.0x ATR)\n"
-                f"- **Risk:Reward Ratio:** 1 : {analysis['rr_ratio']}"
-            )
-            
-            st.markdown("### 🕯️ Candle Status")
+        # ==================== KPI CARDS ====================
+        st.markdown("### 📊 Key Metrics")
+        kpi_cols = st.columns(5)
+        with kpi_cols[0]:
             st.markdown(f"""
-            <div class="candle-status">
-                <b>Present Candle:</b> {present_emoji} {present_color}<br>
-                <b>Next Prediction:</b> {next_emoji} {next_prediction}
+            <div class="kpi-card">
+                <div class="kpi-icon">💰</div>
+                <div class="kpi-value">{analysis['last_price']:,.2f}</div>
+                <div class="kpi-label">Price</div>
             </div>
             """, unsafe_allow_html=True)
-            
-            # ==================== COUNTDOWN TIMER ====================
-            st.markdown("### ⏳ Countdown to Next Candle Close")
-            try:
-                tf_minutes = int(tf_lower.replace('m', '').replace('h', '')) * (60 if 'h' in tf_lower else 1)
-                timer_html = f"""
-                <div style="background-color: #1a2332; border: 1px solid #00b8ff; border-radius: 8px; padding: 10px 15px; margin: 10px 0; text-align: center;">
-                    <span style="color: #cccccc;">⏳ Next {tf_lower} Candle closes in: </span>
-                    <span id="timer_display" style="color: #00ff9f; font-size: 1.4rem; font-weight: bold; font-family: monospace;">--:--</span>
-                </div>
-                <script>
-                    (function() {{
-                        var timeframe_min = {tf_minutes};
-                        var display = document.getElementById('timer_display');
-                        function updateTimer() {{
-                            var now = new Date();
-                            var utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-                            var date = new Date(utc);
-                            var minutes = date.getMinutes();
-                            var seconds = date.getSeconds();
-                            
-                            var next_candle_min = Math.ceil((minutes + 1) / timeframe_min) * timeframe_min;
-                            var remaining_min = next_candle_min - minutes;
-                            var total_sec = remaining_min * 60 - seconds;
-                            if (total_sec < 0) total_sec = 0;
-                            var min_display = Math.floor(total_sec / 60);
-                            var sec_display = total_sec % 60;
-                            display.textContent = 
-                                String(min_display).padStart(2, '0') + 'm ' + 
-                                String(sec_display).padStart(2, '0') + 's';
-                        }}
-                        updateTimer();
-                        setInterval(updateTimer, 1000);
-                    }})();
-                </script>
-                """
-                st.components.v1.html(timer_html, height=70)
-            except:
-                st.info("Timer unavailable for this timeframe.")
+        with kpi_cols[1]:
+            badge_color = "#00c853" if "BUY" in analysis['signal'] else "#f44336" if "SELL" in analysis['signal'] else "#ff9800"
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-icon">📊</div>
+                <div class="kpi-value" style="color:{badge_color}">{analysis['signal']}</div>
+                <div class="kpi-label">Signal</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with kpi_cols[2]:
+            rsi_color = "#00c853" if analysis['rsi'] < 30 else "#f44336" if analysis['rsi'] > 70 else "#ff9800"
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-icon">📈</div>
+                <div class="kpi-value" style="color:{rsi_color}">{analysis['rsi']}</div>
+                <div class="kpi-label">RSI</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with kpi_cols[3]:
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-icon">⚡</div>
+                <div class="kpi-value">{analysis['score']}</div>
+                <div class="kpi-label">Score</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with kpi_cols[4]:
+            winrate, total = get_stats(ticker) if db_initialized else (None, 0)
+            wr = f"{winrate}%" if winrate is not None else "N/A"
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-icon">🏆</div>
+                <div class="kpi-value">{wr}</div>
+                <div class="kpi-label">Win Rate</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-            # ==================== LIVE CHART ====================
-            st.markdown("### 📊 Live Chart")
-            if df_lower is not None and len(df_lower) > 0:
-                chart_df = df_lower.tail(50).copy()
-                fig = go.Figure()
-                
-                fig.add_trace(go.Candlestick(
-                    x=chart_df['Datetime'],
-                    open=chart_df['Open'],
-                    high=chart_df['High'],
-                    low=chart_df['Low'],
-                    close=chart_df['Close'],
-                    name='Price',
-                    increasing_line_color='#00ff88',
-                    decreasing_line_color='#ff4444'
-                ))
-                
-                if analysis.get('support'):
-                    fig.add_hline(y=analysis['support'], line_dash="dash", line_color="blue", 
-                                  annotation_text=f"Support: {analysis['support']:.2f}", 
-                                  annotation_position="top right")
-                
-                if analysis.get('resistance'):
-                    fig.add_hline(y=analysis['resistance'], line_dash="dash", line_color="orange", 
-                                  annotation_text=f"Resistance: {analysis['resistance']:.2f}", 
-                                  annotation_position="bottom right")
-                
-                if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"]:
-                    fig.add_hline(y=analysis['last_price'], line_dash="solid", line_color="white", 
-                                  annotation_text=f"Entry: {analysis['last_price']:.2f}", 
-                                  annotation_position="top left")
-                    fig.add_hline(y=analysis['sl'], line_dash="dot", line_color="red", 
-                                  annotation_text=f"SL: {analysis['sl']:.2f}", 
-                                  annotation_position="bottom left")
-                    fig.add_hline(y=analysis['tp'], line_dash="dot", line_color="green", 
-                                  annotation_text=f"TP: {analysis['tp']:.2f}", 
-                                  annotation_position="top left")
-                
-                fig.update_layout(
-                    template='plotly_dark',
-                    xaxis_title='Time',
-                    yaxis_title='Price (USD)',
-                    height=450,
-                    margin=dict(l=0, r=0, t=0, b=0),
-                    xaxis_rangeslider_visible=False,
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    font=dict(color='#cccccc')
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Chart ke liye data nahi hai.")
-
-            # Backtest
-            st.markdown("### 📜 Backtest Performance")
-            if db_initialized:
-                winrate, total = get_stats(ticker)
-                if winrate is not None:
-                    st.progress(winrate / 100, text=f"Win Rate (Last {total} signals): {winrate}%")
-                    if winrate >= 60:
-                        st.success("✅ System consistent perform kar raha hai!")
-                    else:
-                        st.warning("⚠️ System ko optimize karne ki zaroorat hai.")
-                else:
-                    st.info("📭 Abhi koi closed signal nahi. Pehle kuch trades complete hone dein.")
-            else:
-                st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
-            st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)")
+        # ==================== TABS ====================
+        tab1, tab2, tab3 = st.tabs(["🧠 SMC + News", "🐋 Whale Tracker", "📜 Backtest"])
         
-        with tab2:
+        with tab1:
             st.markdown("### 🧠 Smart Money Concepts (SMC)")
             structure = analysis.get('structure_signal', 'N/A')
             st.markdown(
@@ -1257,14 +1162,29 @@ if st.session_state.get("selected_symbol"):
                     st.caption("📌 No recent news")
             
             st.markdown("### 📊 Multi-Timeframe Trend")
-            st.markdown(f"<div class='mtf-box'><b>Trend:</b> {analysis['mtf_bias']}<br><b>Score:</b> {analysis['score']} / 10</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='mtf-box'><b>Trend:</b> {analysis['mtf_bias']}<br><b>Total Score:</b> {analysis['score']} / 10</div>", unsafe_allow_html=True)
+            
+            st.markdown("### 🕯️ Candle Status")
+            st.markdown(f"""
+            <div class="candle-status">
+                <b>Present Candle:</b> {present_emoji} {present_color}<br>
+                <b>Next Prediction:</b> {next_emoji} {next_prediction}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown("### 🎯 Risk Management")
+            st.info(
+                f"- **Stop Loss (SL):** {analysis['sl']} (2.0x ATR)\n"
+                f"- **Take Profit (TP):** {analysis['tp']} (2.0x ATR)\n"
+                f"- **Risk:Reward Ratio:** 1 : {analysis['rr_ratio']}"
+            )
             
             with st.expander("🧠 Technical Reasons (Score Breakup)"):
                 for r in analysis['reasons']:
                     st.write(f"- {r}")
                 st.caption(f"Total Score: {analysis['score']}")
         
-        with tab3:
+        with tab2:
             st.markdown("### 🐋 Whale Tracker (Smart Money Flow)")
             
             whale_sentiment = analysis.get('whale_sentiment', 'Neutral')
@@ -1296,6 +1216,22 @@ if st.session_state.get("selected_symbol"):
             st.caption("🔴 Bearish = More selling than buying")
             st.caption("⚪ Neutral = Balanced flow")
         
+        with tab3:
+            st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
+            if db_initialized:
+                winrate, total = get_stats(ticker)
+                if winrate is not None:
+                    st.progress(winrate / 100, text=f"Win Rate (Last {total} signals): {winrate}%")
+                    if winrate >= 60:
+                        st.success("✅ System consistent perform kar raha hai!")
+                    else:
+                        st.warning("⚠️ System ko optimize karne ki zaroorat hai.")
+                else:
+                    st.info("📭 Abhi koi closed signal nahi. Pehle kuch trades complete hone dein.")
+            else:
+                st.warning("⚠️ Database connected nahi hai. Backtest stats unavailable.")
+            st.caption("💾 Data Neon PostgreSQL Mein Store Ho Raha Hai (Permanent)")
+        
         # ---- GROK ----
         st.markdown("### 🤖 Grok Text Analysis")
         if st.button("Ask Grok", key="grok_main"):
@@ -1325,4 +1261,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v7.1 | SMC + News + Whale Tracker + Chart + Timer + Alerts | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v7.2 | SMC + News + Whale Tracker + KPI Cards | Neon DB (Permanent)")
