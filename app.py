@@ -26,6 +26,9 @@ if "GEMINI_API_KEY" in st.secrets:
 else:
     st.warning("⚠️ GEMINI_API_KEY missing (Image analysis will be disabled)")
 
+if "FINNHUB_API_KEY" not in st.secrets:
+    st.warning("⚠️ FINNHUB_API_KEY missing. News feature will be disabled.")
+
 st.set_page_config(page_title="Pro Max Trading Signals", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -46,6 +49,7 @@ st.markdown("""
     .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 10px; border-radius: 8px; }
     .candle-status { background-color: #1a1a2e; border-left: 5px solid #ffaa00; padding: 8px 15px; border-radius: 8px; display: inline-block; }
     .smc-box { background-color: #1a1a3e; border-left: 5px solid #8866ff; padding: 10px; border-radius: 8px; margin: 5px 0; }
+    .news-box { background-color: #1a2a1a; border-left: 5px solid #00ff88; padding: 10px; border-radius: 8px; margin: 5px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -390,6 +394,65 @@ def detect_premium_discount(df, lookback=50):
     else:
         return "Equilibrium Zone", 0
 
+# ==================== NEWS SENTIMENT FUNCTION ====================
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_news_sentiment(symbol):
+    """
+    Finnhub se news le kar Grok ke zariye sentiment nikaalna
+    """
+    if "FINNHUB_API_KEY" not in st.secrets:
+        return "Neutral", "API Key Missing"
+    
+    try:
+        # Symbol mapping for Finnhub
+        if "BTC" in symbol:
+            finnhub_symbol = "BINANCE:BTCUSDT"
+        elif "NAS" in symbol or "NQ" in symbol:
+            finnhub_symbol = "US100"
+        elif "USDJPY" in symbol:
+            finnhub_symbol = "FX_IDC:USDJPY"
+        else:
+            finnhub_symbol = symbol
+        
+        url = f"https://finnhub.io/api/v1/news?symbol={finnhub_symbol}&token={st.secrets['FINNHUB_API_KEY']}"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code != 200:
+            return "Neutral", "No News"
+        
+        news_data = response.json()
+        if not news_data:
+            return "Neutral", "No News"
+        
+        # Top 5 headlines
+        headlines = [item['headline'] for item in news_data[:5]]
+        headlines_text = "\n".join(headlines)
+        
+        # Groq se sentiment poochho
+        prompt = f"""
+        In financial news headlines ko dekho aur batao ke inka overall sentiment kya hai: Bullish, Bearish, ya Neutral?
+        Sirf ek word jawab do (Bullish/Bearish/Neutral) aur ek choti reason.
+        Headlines:
+        {headlines_text}
+        """
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=50
+        )
+        result = response.choices[0].message.content.strip()
+        
+        if "Bullish" in result:
+            return "Bullish", headlines
+        elif "Bearish" in result:
+            return "Bearish", headlines
+        else:
+            return "Neutral", headlines
+            
+    except Exception as e:
+        return "Neutral", f"Error: {str(e)}"
+
 # ==================== CANDLE STATUS ====================
 def get_candle_status(df):
     if df is None or len(df) < 2:
@@ -510,8 +573,8 @@ def detect_candle_patterns(df):
         patterns.append("🔥 Bullish Marubozu (Strong)" if last['Close'] > last['Open'] else "💧 Bearish Marubozu (Strong)")
     return patterns
 
-# ==================== SIGNAL ENGINE (WITH SMC INTEGRATION) ====================
-def calculate_advanced_signal(df, df_higher=None):
+# ==================== SIGNAL ENGINE (WITH SMC + NEWS) ====================
+def calculate_advanced_signal(df, df_higher=None, symbol=""):
     if df is None or len(df) < 40:
         return None
     df = df.copy()
@@ -556,12 +619,10 @@ def calculate_advanced_signal(df, df_higher=None):
     mtf_bias = 0
 
     # ==================== SMC LOGIC ====================
-    # 1. Market Structure (BOS/CHoCH)
     structure_score, structure_signal = detect_market_structure(df, lookback=10)
     score += structure_score
     reasons.append(f"🔹 SMC Structure: {structure_signal}")
 
-    # 2. Order Blocks
     ob_low, ob_high, ob_signal = detect_order_blocks(df, lookback=5)
     if ob_signal != "No OB":
         signal_details['order_block_high'] = ob_high
@@ -574,7 +635,6 @@ def calculate_advanced_signal(df, df_higher=None):
             score -= 2
             reasons.append(f"🔹 {ob_signal}")
 
-    # 3. Equal Highs/Lows (Liquidity)
     eqh, eql = detect_equal_highs_lows(df, lookback=30, threshold=0.001)
     if eqh:
         signal_details['eqh'] = eqh
@@ -587,7 +647,6 @@ def calculate_advanced_signal(df, df_higher=None):
             score += 1
             reasons.append(f"🔹 Near Equal Low (Liquidity) @ {eql:.2f}")
 
-    # 4. Fair Value Gaps (FVG)
     fvg_top, fvg_bottom, fvg_signal = detect_fvg(df)
     if fvg_signal != "No FVG":
         signal_details['fvg_top'] = fvg_top
@@ -600,10 +659,27 @@ def calculate_advanced_signal(df, df_higher=None):
             score -= 1
             reasons.append(f"🔹 {fvg_signal}")
 
-    # 5. Premium/Discount Zones
     zone_label, zone_score = detect_premium_discount(df, lookback=50)
     score += zone_score
     reasons.append(f"🔹 Zone: {zone_label}")
+
+    # ==================== NEWS SENTIMENT SCORE ====================
+    if symbol:
+        news_sentiment, news_headlines = fetch_news_sentiment(symbol)
+        signal_details['news_sentiment'] = news_sentiment
+        signal_details['news_headlines'] = news_headlines
+        
+        if news_sentiment == "Bullish":
+            score += 1
+            reasons.append(f"📰 News Sentiment: BULLISH (+1)")
+        elif news_sentiment == "Bearish":
+            score -= 1
+            reasons.append(f"📰 News Sentiment: BEARISH (-1)")
+        else:
+            reasons.append(f"📰 News Sentiment: Neutral")
+    else:
+        signal_details['news_sentiment'] = 'Neutral'
+        signal_details['news_headlines'] = 'No Symbol'
 
     # ==================== MTF TREND ====================
     if df_higher is not None and len(df_higher) > 20:
@@ -687,6 +763,7 @@ def calculate_advanced_signal(df, df_higher=None):
 
     # ==================== FINAL SCORE ====================
     atr = float(last['ATR'])
+    # Scalping Mode (1:1 Ratio)
     if atr / price < 0.005:
         threshold_buy, threshold_sell = 3.5, -3.5
     else:
@@ -703,6 +780,7 @@ def calculate_advanced_signal(df, df_higher=None):
     else:
         signal, badge = "WAIT", "neutral"
 
+    # SL/TP (2x ATR each for 1:1)
     sl_price = price - (2.0 * atr) if "BUY" in signal else price + (2.0 * atr)
     tp_price = price + (2.0 * atr) if "BUY" in signal else price - (2.0 * atr)
     rr_ratio = round(2.0 / 2.0, 2)
@@ -730,12 +808,14 @@ def calculate_advanced_signal(df, df_higher=None):
         "fvg_signal": signal_details.get('fvg_signal', None),
         "order_block_high": signal_details.get('order_block_high', None),
         "order_block_low": signal_details.get('order_block_low', None),
-        "order_block_signal": signal_details.get('order_block_signal', None)
+        "order_block_signal": signal_details.get('order_block_signal', None),
+        "news_sentiment": signal_details.get('news_sentiment', 'Neutral'),
+        "news_headlines": signal_details.get('news_headlines', 'No News')
     }
 
 # ==================== GROK & GEMINI ====================
 def get_grok_analysis(symbol, tf, analysis, price):
-    prompt = f"Symbol: {symbol} | TF: {tf} | Price: {price}\nSignal: {analysis['signal']} | Score: {analysis['score']}\nReasons: {', '.join(analysis['reasons'])}\nPatterns: {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}\nMTF Bias: {analysis['mtf_bias']}\nSL: {analysis['sl']} | TP: {analysis['tp']}\n\nAs a pro trader, give short, direct advice on this trade:\n1. Is this signal reliable? Why?\n2. What is the probability of next candle going as expected?\n3. Should we enter now or wait? (give specific price action triggers)\nMax 6 lines."
+    prompt = f"Symbol: {symbol} | TF: {tf} | Price: {price}\nSignal: {analysis['signal']} | Score: {analysis['score']}\nReasons: {', '.join(analysis['reasons'])}\nPatterns: {', '.join(analysis['patterns']) if analysis['patterns'] else 'None'}\nMTF Bias: {analysis['mtf_bias']}\nSL: {analysis['sl']} | TP: {analysis['tp']}\nNews Sentiment: {analysis.get('news_sentiment', 'Neutral')}\n\nAs a pro trader, give short, direct advice on this trade:\n1. Is this signal reliable? Why?\n2. What is the probability of next candle going as expected?\n3. Should we enter now or wait? (give specific price action triggers)\nMax 6 lines."
     try:
         response = groq_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.4, max_tokens=250)
         return response.choices[0].message.content.strip()
@@ -759,7 +839,7 @@ def analyze_chart_with_gemini(image, symbol, tf):
 
 # ==================== UI ====================
 st.markdown('<h1 class="main-header">🚀 Pro Max Trading Signals</h1>', unsafe_allow_html=True)
-st.caption(f"🇵🇰 {get_pakistan_time()} | SMC + MTF + Volume + S/R + Patterns + Backtest | Neon DB")
+st.caption(f"🇵🇰 {get_pakistan_time()} | SMC + News Sentiment + MTF + Volume + Patterns | Neon DB")
 
 col1, col2, col3 = st.columns([1, 1, 2])
 with col1:
@@ -808,7 +888,7 @@ for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
         if qdf is not None and len(qdf) > 1:
             price = float(qdf['Close'].iloc[-1])
             pct = ((price - float(qdf['Close'].iloc[0])) / float(qdf['Close'].iloc[0])) * 100
-            temp_analysis = calculate_advanced_signal(qdf, None)
+            temp_analysis = calculate_advanced_signal(qdf, None, ticker)
             if temp_analysis:
                 sig = temp_analysis['signal']
         st.markdown(
@@ -847,7 +927,7 @@ if st.session_state.get("selected_symbol"):
     </div>
     """, unsafe_allow_html=True)
     
-    analysis = calculate_advanced_signal(df_lower, df_higher)
+    analysis = calculate_advanced_signal(df_lower, df_higher, ticker)
     
     if analysis:
         if len(df_lower) > 2:
@@ -914,6 +994,27 @@ if st.session_state.get("selected_symbol"):
                 f"- EQH: {analysis.get('eqh', 'None')} | EQL: {analysis.get('eql', 'None')}</div>",
                 unsafe_allow_html=True
             )
+        
+        # ---- NEWS SENTIMENT DISPLAY ----
+        st.markdown("### 📰 News Sentiment")
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            sentiment = analysis.get('news_sentiment', 'Neutral')
+            if sentiment == "Bullish":
+                st.success(f"🟢 {sentiment}")
+            elif sentiment == "Bearish":
+                st.error(f"🔴 {sentiment}")
+            else:
+                st.info(f"⚪ {sentiment}")
+        with col2:
+            headlines = analysis.get('news_headlines', '')
+            if headlines and headlines != "No News" and not headlines.startswith("Error") and headlines != "No Symbol":
+                if isinstance(headlines, list) and len(headlines) > 0:
+                    st.caption(f"📌 {headlines[0][:80]}..." if len(headlines[0]) > 80 else f"📌 {headlines[0]}")
+                else:
+                    st.caption("📌 No recent news")
+            else:
+                st.caption("📌 No recent news")
         
         st.markdown("### 🎯 Risk Management (ATR Based)")
         st.info(
@@ -982,4 +1083,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v5.0 | SMC + Multi-TF + Failover + Alerts | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v6.0 | SMC + News Sentiment + Auto Backtest + Alerts | Neon DB (Permanent)")
