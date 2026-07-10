@@ -13,6 +13,7 @@ import requests
 import smtplib
 from email.message import EmailMessage
 from alpha_vantage.timeseries import TimeSeries
+import plotly.graph_objects as go  # <--- Chart ke liye import
 
 # ==================== API KEYS SETUP ====================
 if "GROQ_API_KEY" in st.secrets:
@@ -49,7 +50,6 @@ st.markdown("""
     .backtest-box { background-color: #1e2a2a; border: 1px solid #4caf50; padding: 10px; border-radius: 8px; }
     .candle-status { background-color: #1a1a2e; border-left: 5px solid #ffaa00; padding: 8px 15px; border-radius: 8px; display: inline-block; }
     .smc-box { background-color: #1a1a3e; border-left: 5px solid #8866ff; padding: 10px; border-radius: 8px; margin: 5px 0; }
-    .news-box { background-color: #1a2a1a; border-left: 5px solid #00ff88; padding: 10px; border-radius: 8px; margin: 5px 0; }
     .whale-box { background-color: #1a1a2a; border-left: 5px solid #ffaa44; padding: 10px; border-radius: 8px; margin: 5px 0; }
 </style>
 """, unsafe_allow_html=True)
@@ -451,15 +451,11 @@ def fetch_news_sentiment(symbol):
 # ==================== WHALE TRACKING FUNCTIONS ====================
 @st.cache_data(ttl=180, show_spinner=False)
 def fetch_whale_data(symbol):
-    """
-    Swiss Whale Intelligence MCP se whale data fetch karna
-    """
     try:
         # Try MCP first
         import mcp
         MCP_SERVER = "https://mcp.swisswhaleintelligence.com/mcp"
         
-        # Symbol mapping
         if "BTC" in symbol:
             whale_symbol = "BTC"
         elif "ETH" in symbol:
@@ -467,7 +463,6 @@ def fetch_whale_data(symbol):
         else:
             return "Neutral", "Symbol not supported for whale tracking"
         
-        # MCP connection
         client = mcp.Client(MCP_SERVER)
         result = client.call_tool("whale_tracker", {
             "symbol": whale_symbol,
@@ -514,7 +509,6 @@ def fetch_whale_data(symbol):
         except:
             pass
             
-        # Fallback to Etherscan for ETH
         try:
             if "ETH" in symbol and "ETHERSCAN_API_KEY" in st.secrets:
                 url = f"https://api.etherscan.io/api?module=account&action=txlist&address=0x28C6c06298d514Db089934071355E5743bf21d60&apikey={st.secrets['ETHERSCAN_API_KEY']}"
@@ -802,7 +796,6 @@ def calculate_advanced_signal(df, df_higher=None, symbol=""):
         else:
             reasons.append(f"🐋 Whale: {whale_reason}")
         
-        # ETH details
         if "ETH" in symbol and "ETHERSCAN_API_KEY" in st.secrets:
             eth_details = fetch_eth_whale_details()
             signal_details['eth_whale_details'] = eth_details
@@ -1123,7 +1116,100 @@ if st.session_state.get("selected_symbol"):
             </div>
             """, unsafe_allow_html=True)
             
-            st.markdown("### 📜 Backtest Performance (Recent 10 Signals)")
+            # ==================== COUNTDOWN TIMER ====================
+            st.markdown("### ⏳ Countdown to Next Candle Close")
+            try:
+                tf_minutes = int(tf_lower.replace('m', '').replace('h', '')) * (60 if 'h' in tf_lower else 1)
+                timer_html = f"""
+                <div style="background-color: #1a2332; border: 1px solid #00b8ff; border-radius: 8px; padding: 10px 15px; margin: 10px 0; text-align: center;">
+                    <span style="color: #cccccc;">⏳ Next {tf_lower} Candle closes in: </span>
+                    <span id="timer_display" style="color: #00ff9f; font-size: 1.4rem; font-weight: bold; font-family: monospace;">--:--</span>
+                </div>
+                <script>
+                    (function() {{
+                        var timeframe_min = {tf_minutes};
+                        var display = document.getElementById('timer_display');
+                        function updateTimer() {{
+                            var now = new Date();
+                            var utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+                            var date = new Date(utc);
+                            var minutes = date.getMinutes();
+                            var seconds = date.getSeconds();
+                            
+                            var next_candle_min = Math.ceil((minutes + 1) / timeframe_min) * timeframe_min;
+                            var remaining_min = next_candle_min - minutes;
+                            var total_sec = remaining_min * 60 - seconds;
+                            if (total_sec < 0) total_sec = 0;
+                            var min_display = Math.floor(total_sec / 60);
+                            var sec_display = total_sec % 60;
+                            display.textContent = 
+                                String(min_display).padStart(2, '0') + 'm ' + 
+                                String(sec_display).padStart(2, '0') + 's';
+                        }}
+                        updateTimer();
+                        setInterval(updateTimer, 1000);
+                    }})();
+                </script>
+                """
+                st.components.v1.html(timer_html, height=70)
+            except:
+                st.info("Timer unavailable for this timeframe.")
+
+            # ==================== LIVE CHART ====================
+            st.markdown("### 📊 Live Chart")
+            if df_lower is not None and len(df_lower) > 0:
+                chart_df = df_lower.tail(50).copy()
+                fig = go.Figure()
+                
+                fig.add_trace(go.Candlestick(
+                    x=chart_df['Datetime'],
+                    open=chart_df['Open'],
+                    high=chart_df['High'],
+                    low=chart_df['Low'],
+                    close=chart_df['Close'],
+                    name='Price',
+                    increasing_line_color='#00ff88',
+                    decreasing_line_color='#ff4444'
+                ))
+                
+                if analysis.get('support'):
+                    fig.add_hline(y=analysis['support'], line_dash="dash", line_color="blue", 
+                                  annotation_text=f"Support: {analysis['support']:.2f}", 
+                                  annotation_position="top right")
+                
+                if analysis.get('resistance'):
+                    fig.add_hline(y=analysis['resistance'], line_dash="dash", line_color="orange", 
+                                  annotation_text=f"Resistance: {analysis['resistance']:.2f}", 
+                                  annotation_position="bottom right")
+                
+                if analysis['signal'] in ["BUY", "STRONG BUY", "SELL", "STRONG SELL"]:
+                    fig.add_hline(y=analysis['last_price'], line_dash="solid", line_color="white", 
+                                  annotation_text=f"Entry: {analysis['last_price']:.2f}", 
+                                  annotation_position="top left")
+                    fig.add_hline(y=analysis['sl'], line_dash="dot", line_color="red", 
+                                  annotation_text=f"SL: {analysis['sl']:.2f}", 
+                                  annotation_position="bottom left")
+                    fig.add_hline(y=analysis['tp'], line_dash="dot", line_color="green", 
+                                  annotation_text=f"TP: {analysis['tp']:.2f}", 
+                                  annotation_position="top left")
+                
+                fig.update_layout(
+                    template='plotly_dark',
+                    xaxis_title='Time',
+                    yaxis_title='Price (USD)',
+                    height=450,
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    xaxis_rangeslider_visible=False,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(color='#cccccc')
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("Chart ke liye data nahi hai.")
+
+            # Backtest
+            st.markdown("### 📜 Backtest Performance")
             if db_initialized:
                 winrate, total = get_stats(ticker)
                 if winrate is not None:
@@ -1239,4 +1325,4 @@ if st.session_state.get("selected_symbol"):
 else:
     st.info("👈 Left side se koi bhi symbol click karein detailed analysis ke liye.")
 
-st.caption("⚡ Advanced System v7.0 | SMC + News + Whale Tracker + Auto Backtest + Alerts | Neon DB (Permanent)")
+st.caption("⚡ Advanced System v7.1 | SMC + News + Whale Tracker + Chart + Timer + Alerts | Neon DB (Permanent)")
