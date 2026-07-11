@@ -4,5 +4,5 @@ pandas
 numpy
 pytz
 SQLAlchemy
-pg8000
+psycopg2-binary
 requests
