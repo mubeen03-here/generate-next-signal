@@ -425,22 +425,3 @@ if st.session_state.get("selected_symbol"):
             st.warning("Database disconnected.")
 else:
     st.info("Select an instrument from the terminal overhead to sync order flow logic.")
-    
-# ==================== ADMIN CONTROLS (TEMPORARY) ====================
-with st.sidebar:
-    st.divider()
-    st.markdown("### ⚠️ Admin Controls")
-    if st.button("🗑️ Reset Entire Database"):
-        conn = get_conn()
-        if conn is not None:
-            try:
-                with conn.session as s:
-                    # Purani aur nayi saari tables uda do
-                    s.execute(text("DROP TABLE IF EXISTS signal_history CASCADE;"))
-                    s.execute(text("DROP TABLE IF EXISTS signals_v2 CASCADE;"))
-                    s.execute(text("DROP TABLE IF EXISTS symbols CASCADE;"))
-                    s.commit()
-                st.success("✅ Saara purana data aur tables delete ho gaye! App refresh karein.")
-                st.cache_data.clear()
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
