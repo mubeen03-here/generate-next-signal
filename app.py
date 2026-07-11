@@ -419,3 +419,4 @@ if st.session_state.get("selected_symbol"):
             st.warning("Database disconnected.")
 else:
     st.info("Select an instrument from the terminal overhead to sync order flow logic.")
+    
