@@ -65,7 +65,6 @@ def init_db():
     if conn is None: return False
     try:
         with conn.session as s:
-            # Table 1: Symbols Lookup
             s.execute(text("""
                 CREATE TABLE IF NOT EXISTS symbols (
                     symbol_id SERIAL PRIMARY KEY,
@@ -73,7 +72,6 @@ def init_db():
                     name TEXT
                 )
             """))
-            # Table 2: Professional Signals (with Idempotent Unique Constraint)
             s.execute(text("""
                 CREATE TABLE IF NOT EXISTS signals_v2 (
                     signal_id SERIAL PRIMARY KEY,
@@ -89,8 +87,7 @@ def init_db():
                 )
             """))
             
-            # Insert defaults
-            symbols = [("BTC-USD", "Bitcoin"), ("USDJPY=X", "USD/JPY"), ("NQ=F", "NAS100")]
+            symbols = [("BTC-USD", "Bitcoin"), ("USDJPY=X", "USD/JPY"), ("NQ=F", "NAS100"), ("GC=F", "Gold")]
             for t, n in symbols:
                 s.execute(text("INSERT INTO symbols (ticker, name) VALUES (:t, :n) ON CONFLICT DO NOTHING"), {"t": t, "n": n})
             s.commit()
@@ -108,7 +105,6 @@ def save_signal(ticker, signal, entry, target, sl):
             sym_id = res[0]
             now = datetime.now(pytz.timezone('Asia/Karachi')).strftime("%Y-%m-%d %H:%M:%S")
             
-            # Idempotent Insert
             s.execute(text("""
                 INSERT INTO signals_v2 (symbol_id, timestamp, signal_type, entry_price, target_price, stop_loss)
                 VALUES (:sid, :ts, :sig, :ent, :tp, :sl)
@@ -135,7 +131,6 @@ def update_old_signals(ticker, df):
             df['Datetime'] = pd.to_datetime(df['Datetime']).dt.tz_localize(None)
             for row in rows:
                 sig_id, sig_time, sig_type, target, sl = row
-                # Multi-candle check
                 future_candles = df[df['Datetime'] > pd.to_datetime(sig_time)]
                 if future_candles.empty: continue
                 
@@ -196,11 +191,9 @@ def detect_sessions_and_vwap(df):
     else:
         df['Datetime_UTC'] = df['Datetime'].dt.tz_convert('UTC')
         
-    # FIXED: Using IANA timezone 'America/New_York' instead of 'US/Eastern'
     df_ny = df['Datetime_UTC'].dt.tz_convert('America/New_York')
     df['Date_NY'] = df_ny.dt.date
     
-    # Session Kill Zones (EST Based)
     hour = df_ny.dt.hour
     conditions = [
         (hour >= 2) & (hour < 5),   # London Killzone
@@ -210,7 +203,6 @@ def detect_sessions_and_vwap(df):
     choices = ['London Session', 'NY AM Session', 'NY PM Session']
     df['Session'] = np.select(conditions, choices, default='Asian/Consolidation Zone')
     
-    # Calculate Rolling VWAP (Daily)
     df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
     df['PV'] = df['Typical_Price'] * df['Volume']
     df['Cum_PV'] = df.groupby('Date_NY')['PV'].cumsum()
@@ -219,21 +211,25 @@ def detect_sessions_and_vwap(df):
     
     return df
 
-def detect_liquidity_sweep(df, lookback=20):
-    if len(df) < lookback + 2: return "Neutral", 0
-    recent = df.iloc[-(lookback+1):-1]
-    swing_high = float(recent['High'].max())
-    swing_low = float(recent['Low'].min())
+def detect_smart_money_structure(df, lookback=30):
+    if len(df) < lookback + 5: return "Neutral Structure", 0, False
     
-    current = df.iloc[-1]
-    # Bearish Sweep: Poked above swing high but closed below
-    if current['High'] > swing_high and current['Close'] < swing_high:
-        return f"Buyside Liquidity Swept @ {swing_high:.2f}", -1
-    # Bullish Sweep: Poked below swing low but closed above
-    if current['Low'] < swing_low and current['Close'] > swing_low:
-        return f"Sellside Liquidity Swept @ {swing_low:.2f}", 1
+    past_data = df.iloc[-(lookback+3):-3]
+    swing_high = float(past_data['High'].max())
+    swing_low = float(past_data['Low'].min())
+    
+    recent = df.iloc[-3:]
+    current_vol = float(df['Volume'].iloc[-1])
+    avg_vol = float(df['Volume'].rolling(20).mean().iloc[-1])
+    vol_spike = current_vol > (avg_vol * 1.2)
+    
+    if (recent['High'].max() > swing_high) and (df['Close'].iloc[-1] < swing_high):
+        return f"Buyside Liquidity Swept @ {swing_high:.2f}", -1, vol_spike
         
-    return "Consolidating Inside Range", 0
+    if (recent['Low'].min() < swing_low) and (df['Close'].iloc[-1] > swing_low):
+        return f"Sellside Liquidity Swept @ {swing_low:.2f}", 1, vol_spike
+        
+    return "Consolidating Inside Range", 0, vol_spike
 
 def calculate_institutional_signal(df, ticker):
     if df is None or len(df) < 50: return None
@@ -244,9 +240,8 @@ def calculate_institutional_signal(df, ticker):
     vwap = float(last['VWAP'])
     session = last['Session']
     
-    sweep_msg, sweep_dir = detect_liquidity_sweep(df)
+    sweep_msg, sweep_dir, has_vol_spike = detect_smart_money_structure(df)
     
-    # ATR for Risk Management
     tr = pd.DataFrame()
     tr['1'] = df['High'] - df['Low']
     tr['2'] = (df['High'] - df['Close'].shift()).abs()
@@ -257,7 +252,6 @@ def calculate_institutional_signal(df, ticker):
     bullish_pts = 0
     bearish_pts = 0
     
-    # 1. VWAP Alignment
     if price > vwap:
         bullish_pts += 1
         reasons.append("✅ Price sustaining ABOVE Daily VWAP")
@@ -265,35 +259,38 @@ def calculate_institutional_signal(df, ticker):
         bearish_pts += 1
         reasons.append("❌ Price heavily BELOW Daily VWAP")
         
-    # 2. Liquidity Sweep
     if sweep_dir == 1:
-        bullish_pts += 2
-        reasons.append(f"🟢 {sweep_msg} (Reversal Probable)")
+        if has_vol_spike:
+            bullish_pts += 2
+            reasons.append(f"🟢 {sweep_msg} with Strong Volume Spike (+2)")
+        else:
+            bullish_pts += 1
+            reasons.append(f"⚠️ {sweep_msg} but NO Volume Spike (Weak)")
+            
     elif sweep_dir == -1:
-        bearish_pts += 2
-        reasons.append(f"🔴 {sweep_msg} (Reversal Probable)")
+        if has_vol_spike:
+            bearish_pts += 2
+            reasons.append(f"🔴 {sweep_msg} with Strong Volume Spike (+2)")
+        else:
+            bearish_pts += 1
+            reasons.append(f"⚠️ {sweep_msg} but NO Volume Spike (Weak)")
     else:
         reasons.append(f"⚪ {sweep_msg}")
         
-    # 3. Time/Session Context
     reasons.append(f"⏱️ Active Trading Window: {session}")
     is_active_session = "Session" in session
     
-    # Determine Signal
     signal = "WAIT"
     badge = "neutral"
     
-    # Strict execution criteria: Must have sweep + VWAP alignment + Killzone volume
     if is_active_session:
-        if bullish_pts >= 3: # Needs both VWAP and Sweep
+        if bullish_pts >= 3: 
             signal, badge = "BUY", "buy"
         elif bearish_pts >= 3:
             signal, badge = "SELL", "sell"
     else:
-        reasons.append("⚠️ Low Volume Environment: Algorithms set to WAIT to prevent fakeouts.")
+        reasons.append("⚠️ Low Volume Environment: Algorithms set to WAIT.")
         
-    # Professional Risk Management (Targeting 1:2.5 to 1:3 RR)
-    # Using larger stops to survive manipulation spikes
     sl_dist = 2.0 * atr
     tp_dist = 5.0 * atr
     
@@ -359,13 +356,11 @@ if st.session_state.get("selected_symbol"):
     analysis = calculate_institutional_signal(df_lower, ticker)
     
     if analysis:
-        # Save & Update Logic
         if analysis['signal'] in ["BUY", "SELL"] and db_initialized:
             save_signal(ticker, analysis['signal'], analysis['price'], analysis['tp'], analysis['sl'])
         if db_initialized:
             update_old_signals(ticker, df_lower)
             
-        # KPI ROW
         st.markdown("<br>", unsafe_allow_html=True)
         kpi_cols = st.columns(5)
         with kpi_cols[0]:
@@ -411,7 +406,6 @@ if st.session_state.get("selected_symbol"):
                 </div>
             """, unsafe_allow_html=True)
             
-        # Backtest Report
         st.divider()
         st.markdown("#### Real-Time Edge Validation (Neon DB)")
         if db_initialized:
