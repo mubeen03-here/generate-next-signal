@@ -196,7 +196,8 @@ def detect_sessions_and_vwap(df):
     else:
         df['Datetime_UTC'] = df['Datetime'].dt.tz_convert('UTC')
         
-    df_ny = df['Datetime_UTC'].dt.tz_convert('US/Eastern')
+    # FIXED: Using IANA timezone 'America/New_York' instead of 'US/Eastern'
+    df_ny = df['Datetime_UTC'].dt.tz_convert('America/New_York')
     df['Date_NY'] = df_ny.dt.date
     
     # Session Kill Zones (EST Based)
