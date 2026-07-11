@@ -6,6 +6,7 @@ from datetime import datetime
 import pytz
 from sqlalchemy import text
 import time
+import requests
 
 # ==================== PAGE SETUP ====================
 st.set_page_config(page_title="Institutional Trading Terminal", layout="wide", initial_sidebar_state="expanded")
@@ -37,6 +38,7 @@ st.markdown("""
     .logic-green { border-left-color: #10B981; }
     .logic-red { border-left-color: #EF4444; }
     .logic-orange { border-left-color: #F59E0B; }
+    .logic-macro { border-left-color: #FF00FF; background-color: rgba(255, 0, 255, 0.05); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -52,7 +54,7 @@ def get_pakistan_time():
     tz = pytz.timezone('Asia/Karachi')
     return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
 
-# ==================== DATABASE ENGINE (V2 SCHEMA) ====================
+# ==================== DATABASE ENGINE ====================
 def get_conn():
     try:
         return st.connection("neon", type="sql")
@@ -112,7 +114,7 @@ def save_signal(ticker, signal, entry, target, sl):
             """), {"sid": sym_id, "ts": now, "sig": signal, "ent": entry, "tp": target, "sl": sl})
             s.commit()
     except Exception as e:
-        st.error(f"DB Insert Error: {str(e)}")
+        pass
 
 def update_old_signals(ticker, df):
     conn = get_conn()
@@ -148,7 +150,7 @@ def update_old_signals(ticker, df):
                 if res:
                     s.execute(text("UPDATE signals_v2 SET status='CLOSED', result=:res WHERE signal_id=:id"), {"res": res, "id": sig_id})
             s.commit()
-    except Exception as e:
+    except Exception:
         pass
 
 def get_stats(ticker):
@@ -167,6 +169,25 @@ def get_stats(ticker):
             return round((wins / len(df_sql)) * 100), len(df_sql)
     except Exception:
         return None, 0
+
+# ==================== MACRO CALENDAR (NEWS FILTER) ====================
+@st.cache_data(ttl=3600, show_spinner=False)
+def check_macro_news():
+    try:
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=5)
+        news_list = []
+        if response.status_code == 200:
+            data = response.json()
+            for item in data:
+                # Sirf USD ki High Impact news filter kar rahe hain
+                if item['impact'] == 'High' and item['country'] == 'USD':
+                    news_time = pd.to_datetime(item['date']).tz_convert('America/New_York')
+                    news_list.append((item['title'], news_time))
+        return news_list
+    except:
+        return []
 
 # ==================== MARKET DATA FETCHER ====================
 @st.cache_data(ttl=60, show_spinner=False)
@@ -239,6 +260,7 @@ def calculate_institutional_signal(df, ticker):
     price = float(last['Close'])
     vwap = float(last['VWAP'])
     session = last['Session']
+    current_time_ny = df['Datetime_UTC'].iloc[-1].tz_convert('America/New_York')
     
     sweep_msg, sweep_dir, has_vol_spike = detect_smart_money_structure(df)
     
@@ -291,6 +313,21 @@ def calculate_institutional_signal(df, ticker):
     else:
         reasons.append("⚠️ Low Volume Environment: Algorithms set to WAIT.")
         
+    # --- MACRO NEWS FILTER (THE BLOCKER) ---
+    upcoming_news = check_macro_news()
+    macro_block_active = False
+    
+    for title, news_time in upcoming_news:
+        # Check if current time is within +/- 30 minutes of High Impact News
+        time_diff_mins = (current_time_ny - news_time).total_seconds() / 60.0
+        if -30 <= time_diff_mins <= 30:
+            macro_block_active = True
+            reasons.append(f"🚨 MACRO BLOCK ACTIVE: {title} scheduled at {news_time.strftime('%I:%M %p EST')}")
+            break
+            
+    if macro_block_active:
+        signal, badge = "WAIT", "neutral"
+        
     sl_dist = 2.0 * atr
     tp_dist = 5.0 * atr
     
@@ -301,6 +338,7 @@ def calculate_institutional_signal(df, ticker):
     return {
         "signal": signal, "badge": badge, "price": price, 
         "vwap": vwap, "session": session, "sweep": sweep_msg,
+        "macro_block": macro_block_active,
         "sl": round(sl, 2), "tp": round(tp, 2), "rr": rr, "reasons": reasons
     }
 
@@ -378,6 +416,15 @@ if st.session_state.get("selected_symbol"):
 
         st.markdown("<br>", unsafe_allow_html=True)
         
+        # Display Macro Block visual warning if active
+        if analysis['macro_block']:
+            st.markdown(f"""
+                <div class='logic-box logic-macro'>
+                    <b style="color:#FF00FF;">🚨 MACRO NEWS EMBARGO ACTIVE</b><br>
+                    High-impact USD event detected. All algorithmic entries are blocked to prevent slippage and spread manipulation.
+                </div>
+            """, unsafe_allow_html=True)
+        
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("#### Liquidity & Structure")
@@ -419,4 +466,3 @@ if st.session_state.get("selected_symbol"):
             st.warning("Database disconnected.")
 else:
     st.info("Select an instrument from the terminal overhead to sync order flow logic.")
-    
