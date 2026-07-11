@@ -5,3 +5,4 @@ numpy
 pytz
 SQLAlchemy
 psycopg2-binary
+requests
