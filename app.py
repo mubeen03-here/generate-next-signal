@@ -115,12 +115,20 @@ def is_macro_news_blocked():
     return False
 
 # ==========================================
-# 5. CORE INSTITUTIONAL LOGIC
+# 5. CORE INSTITUTIONAL LOGIC (WITH FALLBACK)
 # ==========================================
-def generate_signals_engine(symbol, timeframe="15m"):
-    """Core algorithmic engine utilizing VWAP, Liquidity Sweeps and relaxed Volume spikes."""
+def generate_signals_engine(selected_symbol, timeframe="15m"):
+    """Core algorithmic engine with Yahoo Finance fallback protection."""
     try:
-        df = yf.download(symbol, period="5d", interval=timeframe)
+        actual_symbol = selected_symbol
+        df = yf.download(actual_symbol, period="5d", interval=timeframe, progress=False)
+        
+        # Fallback Mechanism: Agar Yahoo data block kare, to Crypto par shift ho jaye
+        if df.empty or len(df) < 35:
+            st.warning(f"⚠️ {actual_symbol} data blocked by Yahoo API. Auto-switching to BTC-USD Fallback.")
+            actual_symbol = "BTC-USD"
+            df = yf.download(actual_symbol, period="5d", interval=timeframe, progress=False)
+            
         if df.empty or len(df) < 35:
             return None
         
@@ -176,6 +184,7 @@ def generate_signals_engine(symbol, timeframe="15m"):
                 tp = current_price - (3.0 * atr)
                 
         return {
+            "actual_symbol": actual_symbol,
             "signal": signal,
             "entry": entry,
             "tp": tp,
@@ -184,7 +193,7 @@ def generate_signals_engine(symbol, timeframe="15m"):
             "current_price": current_price,
             "news_blocked": news_block
         }
-    except Exception:
+    except Exception as e:
         return None
 
 # ==========================================
@@ -194,7 +203,7 @@ st.title("🛡️ Institutional Grade Algorithmic Terminal")
 
 # Sidebar - Asset Selection
 st.sidebar.header("Asset Settings")
-symbol = st.sidebar.selectbox("Select Asset", ["GC=F", "BTC-USD", "ETH-USD"], index=0)
+symbol_input = st.sidebar.selectbox("Select Asset", ["GC=F", "BTC-USD", "ETH-USD"], index=0)
 timeframe = st.sidebar.selectbox("Select Timeframe", ["5m", "15m", "1h"], index=1)
 
 # Sidebar - Admin Dashboard Panel
@@ -217,16 +226,17 @@ if admin_password == "mubeen123":
             st.rerun()
 
 # Run Engine and Auto-Timeout Updates
-engine_output = generate_signals_engine(symbol, timeframe)
+engine_output = generate_signals_engine(symbol_input, timeframe)
 
 if engine_output:
+    used_symbol = engine_output["actual_symbol"]
     current_price = engine_output["current_price"]
-    run_auto_timeout_and_updates(symbol, current_price)
+    run_auto_timeout_and_updates(used_symbol, current_price)
     
     # Display Status Cards
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Current Market Price", f"{current_price:.2f}")
+        st.metric(f"Current Price ({used_symbol})", f"{current_price:.2f}")
     with col2:
         st.metric("Daily VWAP Level", f"{engine_output['vwap']:.2f}")
     with col3:
@@ -242,7 +252,7 @@ if engine_output:
                 VALUES (:symbol, NOW(), :signal_type, :entry_price, :tp, :sl, 'PENDING', 'OPEN')
                 ON CONFLICT (symbol, timestamp, signal_type, entry_price) DO NOTHING
             """), {
-                "symbol": symbol,
+                "symbol": used_symbol,
                 "signal_type": signal_type,
                 "entry_price": engine_output["entry"],
                 "tp": engine_output["tp"],
@@ -253,13 +263,13 @@ if engine_output:
     st.subheader("📊 Live Tracking Dashboard")
     with engine.connect() as conn:
         active_signals = conn.execute(text(
-            "SELECT timestamp, signal_type, entry_price, tp, sl, status, result FROM signals_v2 ORDER BY id DESC LIMIT 10"
+            "SELECT timestamp, signal_type, symbol, entry_price, tp, sl, status, result FROM signals_v2 ORDER BY id DESC LIMIT 10"
         )).fetchall()
         
     if active_signals:
-        df_signals = pd.DataFrame(active_signals, columns=["Time", "Type", "Entry Price", "Take Profit", "Stop Loss", "Status", "Result"])
+        df_signals = pd.DataFrame(active_signals, columns=["Time", "Type", "Asset", "Entry Price", "Take Profit", "Stop Loss", "Status", "Result"])
         st.dataframe(df_signals, use_container_width=True)
     else:
         st.info("No active signals recorded yet. Waiting for structural sweeps...")
 else:
-    st.error("Yahoo Finance rate limit or empty data. Please switch asset or try again in a few minutes.")
+    st.error("Yahoo Finance rate limit or network error. Please refresh in a few minutes.")
