@@ -65,8 +65,6 @@ def reset_entire_database():
 # ==========================================
 def run_auto_timeout_and_updates(symbol, current_price):
     """Cancels >24h stale signals and checks TP/SL hits for active ones."""
-    utc_now = datetime.now(pytz.utc)
-    
     with engine.begin() as conn:
         # 1. 24-Hour Auto Timeout Logic
         conn.execute(text("""
@@ -121,70 +119,73 @@ def is_macro_news_blocked():
 # ==========================================
 def generate_signals_engine(symbol, timeframe="15m"):
     """Core algorithmic engine utilizing VWAP, Liquidity Sweeps and relaxed Volume spikes."""
-    df = yf.download(symbol, period="5d", interval=timeframe)
-    if df.empty:
+    try:
+        df = yf.download(symbol, period="5d", interval=timeframe)
+        if df.empty or len(df) < 35:
+            return None
+        
+        # Clean Column Names
+        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+        
+        # Calculate Daily VWAP
+        cum_vol = df['Volume'].cumsum()
+        cum_vol_price = (df['Close'] * df['Volume']).cumsum()
+        df['VWAP'] = cum_vol_price / cum_vol
+        
+        # Volatility and Average Volume
+        df['ATR'] = df['Close'].diff().abs().rolling(14).mean()
+        df['Vol_MA'] = df['Volume'].rolling(20).mean()
+        
+        # Lookback for Swings
+        lookback = 30
+        df['Recent_High'] = df['High'].rolling(lookback).max()
+        df['Recent_Low'] = df['Low'].rolling(lookback).min()
+        
+        last_row = df.iloc[-1]
+        prev_row = df.iloc[-2]
+        
+        current_price = float(last_row['Close'])
+        current_volume = float(last_row['Volume'])
+        avg_volume = float(last_row['Vol_MA'])
+        vwap = float(last_row['VWAP'])
+        atr = float(last_row['ATR'])
+        
+        # Relaxed Volume Spike check for better Scalping (1.2x)
+        volume_spike = current_volume > (avg_volume * 1.2)
+        
+        # Liquidity Sweep Detections
+        liquidity_sweep_bullish = (prev_row['Low'] <= last_row['Recent_Low']) and (current_price > last_row['Recent_Low'])
+        liquidity_sweep_bearish = (prev_row['High'] >= last_row['Recent_High']) and (current_price < last_row['Recent_High'])
+        
+        # Macro Filter Check
+        news_block = is_macro_news_blocked()
+        
+        signal = "WAIT"
+        entry = current_price
+        tp = 0.0
+        sl = 0.0
+        
+        if not news_block:
+            if current_price > vwap and liquidity_sweep_bullish and volume_spike:
+                signal = "BUY"
+                sl = current_price - (1.5 * atr)
+                tp = current_price + (3.0 * atr)
+            elif current_price < vwap and liquidity_sweep_bearish and volume_spike:
+                signal = "SELL"
+                sl = current_price + (1.5 * atr)
+                tp = current_price - (3.0 * atr)
+                
+        return {
+            "signal": signal,
+            "entry": entry,
+            "tp": tp,
+            "sl": sl,
+            "vwap": vwap,
+            "current_price": current_price,
+            "news_blocked": news_block
+        }
+    except Exception:
         return None
-    
-    # Clean Column Names
-    df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-    
-    # Calculate Daily VWAP
-    cum_vol = df['Volume'].cumsum()
-    cum_vol_price = (df['Close'] * df['Volume']).cumsum()
-    df['VWAP'] = cum_vol_price / cum_vol
-    
-    # Volatility and Average Volume
-    df['ATR'] = df['Close'].diff().abs().rolling(14).mean()
-    df['Vol_MA'] = df['Volume'].rolling(20).mean()
-    
-    # Lookback for Swings
-    lookback = 30
-    df['Recent_High'] = df['High'].rolling(lookback).max()
-    df['Recent_Low'] = df['Low'].rolling(lookback).min()
-    
-    last_row = df.iloc[-1]
-    prev_row = df.iloc[-2]
-    
-    current_price = last_row['Close']
-    current_volume = last_row['Volume']
-    avg_volume = last_row['Vol_MA']
-    vwap = last_row['VWAP']
-    atr = last_row['ATR']
-    
-    # Relaxed Volume Spike check for better Scalping (1.2x)
-    volume_spike = current_volume > (avg_volume * 1.2)
-    
-    # Liquidity Sweep Detections
-    liquidity_sweep_bullish = (prev_row['Low'] <= last_row['Recent_Low']) and (current_price > last_row['Recent_Low'])
-    liquidity_sweep_bearish = (prev_row['High'] >= last_row['Recent_High']) and (current_price < last_row['Recent_High'])
-    
-    # Macro Filter Check
-    news_block = is_macro_news_blocked()
-    
-    signal = "WAIT"
-    entry = current_price
-    tp = 0.0
-    sl = 0.0
-    
-    if not news_block:
-        if current_price > vwap and liquidity_sweep_bullish and volume_spike:
-            signal = "BUY"
-            sl = current_price - (1.5 * atr)
-            tp = current_price + (3.0 * atr)
-        elif current_price < vwap and liquidity_sweep_bearish and volume_spike:
-            signal = "SELL"
-            sl = current_price + (1.5 * atr)
-            tp = current_price - (3.0 * atr)
-            
-    return {
-        "signal": signal,
-        "entry": entry,
-        "tp": tp,
-        "sl": sl,
-        "vwap": vwap,
-        "current_price": current_price,
-        "news_blocked": news_block
-    }
 
 # ==========================================
 # 6. STREAMLIT UI & DASHBOARD
@@ -193,7 +194,7 @@ st.title("🛡️ Institutional Grade Algorithmic Terminal")
 
 # Sidebar - Asset Selection
 st.sidebar.header("Asset Settings")
-symbol = st.sidebar.selectbox("Select Asset", ["XAUUSD=F", "BTC-USD", "ETH-USD"], index=0)
+symbol = st.sidebar.selectbox("Select Asset", ["GC=F", "BTC-USD", "ETH-USD"], index=0)
 timeframe = st.sidebar.selectbox("Select Timeframe", ["5m", "15m", "1h"], index=1)
 
 # Sidebar - Admin Dashboard Panel
@@ -207,12 +208,12 @@ if admin_password == "mubeen123":
     with col_admin1:
         if st.button("🔴 Cancel All Pending"):
             cancel_all_pending_signals()
-            st.sidebar.success("All pending updated to CANCELLED!")
+            st.sidebar.success("Pending Signals Cancelled!")
             st.rerun()
     with col_admin2:
         if st.button("⚠️ Reset Entire DB"):
             reset_entire_database()
-            st.sidebar.warning("Database tables cleared!")
+            st.sidebar.warning("Database Tables Cleared!")
             st.rerun()
 
 # Run Engine and Auto-Timeout Updates
@@ -235,7 +236,6 @@ if engine_output:
     # Process New Signals
     signal_type = engine_output["signal"]
     if signal_type in ["BUY", "SELL"]:
-        # Save to Neon DB with unique constraints bypass
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO signals_v2 (symbol, timestamp, signal_type, entry_price, tp, sl, status, result)
@@ -262,5 +262,4 @@ if engine_output:
     else:
         st.info("No active signals recorded yet. Waiting for structural sweeps...")
 else:
-    st.error("Failed to retrieve market data. Check connection settings.")
-    
+    st.error("Yahoo Finance rate limit or empty data. Please switch asset or try again in a few minutes.")
