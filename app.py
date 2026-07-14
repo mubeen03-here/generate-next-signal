@@ -20,7 +20,6 @@ def get_db_engine():
     if "?sslmode=" not in db_url:
         db_url += "?sslmode=require"
     
-    # Pooling added to prevent connection drops on Neon DB
     return create_engine(
         db_url,
         pool_size=10,
@@ -32,10 +31,9 @@ def get_db_engine():
 engine = get_db_engine()
 
 def init_db():
-    """Initializes schema and automatically handles legacy table reconstruction if corrupted."""
+    """Initializes schema v2. Safely drops and recreates table if 'id' column is missing."""
     recreate = False
     
-    # Check if we can safely query the 'id' column on signals_v2
     with engine.connect() as conn:
         try:
             conn.execute(text("SELECT id FROM signals_v2 LIMIT 1;"))
@@ -61,7 +59,6 @@ def init_db():
             );
         """))
 
-# Run database configuration
 init_db()
 
 # ==========================================
@@ -138,9 +135,9 @@ def is_macro_news_blocked():
 # ==========================================
 # 5. CACHED DATA DOWNLOADING (ANTI-RATE LIMIT)
 # ==========================================
-@st.cache_data(ttl=120)  # Caches data for 2 minutes to prevent Yahoo 429 block
+@st.cache_data(ttl=120)
 def fetch_ticker_data(symbol, timeframe):
-    """Downloads and returns market data from yfinance."""
+    """Downloads and returns market data from yfinance with cache protection."""
     return yf.download(symbol, period="5d", interval=timeframe, progress=False)
 
 # ==========================================
@@ -152,7 +149,7 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
         actual_symbol = selected_symbol
         df = fetch_ticker_data(actual_symbol, timeframe)
         
-        # Fallback Mechanism: If Yahoo data is blocked, switch to Crypto
+        # Fallback Mechanism: Switching to Crypto if blocked
         if df.empty or len(df) < 35:
             st.warning(f"⚠️ {actual_symbol} data blocked by Yahoo API. Auto-switching to BTC-USD Fallback.")
             actual_symbol = "BTC-USD"
@@ -161,7 +158,7 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
         if df.empty or len(df) < 35:
             return None
         
-        # Clean Column Names (Handles MultiIndex columns safely)
+        # Clean Column Names (Handles MultiIndex)
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         
         # Calculate Daily VWAP
@@ -181,7 +178,7 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
         
-        # Extract candle timestamp for precise DB constraint match
+        # Candle timestamp for DB unique constraint mapping
         candle_timestamp = df.index[-1]
         if candle_timestamp.tzinfo is not None:
             candle_timestamp = candle_timestamp.tz_convert('UTC').tz_localize(None)
@@ -226,7 +223,8 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
             "vwap": vwap,
             "current_price": current_price,
             "news_blocked": news_block,
-            "timestamp": candle_timestamp  # Pass the precise candle time
+            "timestamp": candle_timestamp,
+            "plot_df": df[['Close', 'VWAP']].tail(50)  # Safe sliced dataframe for plotting
         }
     except Exception as e:
         return None
@@ -236,13 +234,15 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
 # ==========================================
 st.title("🛡️ Institutional Grade Algorithmic Terminal")
 
-# Sidebar - Asset Selection
-st.sidebar.header("Asset Settings")
-symbol_input = st.sidebar.selectbox("Select Asset", ["GC=F", "BTC-USD", "ETH-USD"], index=0)
-timeframe = st.sidebar.selectbox("Select Timeframe", ["5m", "15m", "1h"], index=1)
+# Main Screen - Market Analysis Controls (Asset Selection)
+st.markdown("### ⚙️ Market Analysis Settings")
+col_select1, col_select2 = st.columns(2)
+with col_select1:
+    symbol_input = st.selectbox("Select Asset", ["GC=F", "BTC-USD", "ETH-USD"], index=0)
+with col_select2:
+    timeframe = st.selectbox("Select Timeframe", ["5m", "15m", "1h"], index=1)
 
-# Sidebar - Admin Dashboard Panel
-st.sidebar.markdown("---")
+# Sidebar - Admin Dashboard Panel Only
 st.sidebar.subheader("⚙️ Admin Control Panel")
 admin_password = st.sidebar.text_input("Enter Admin Password", type="password")
 
@@ -288,12 +288,16 @@ if engine_output:
                 ON CONFLICT (symbol, timestamp, signal_type, entry_price) DO NOTHING
             """), {
                 "symbol": used_symbol,
-                "timestamp": engine_output["timestamp"],  # Strictly maps database UNIQUE index constraint
+                "timestamp": engine_output["timestamp"],  # Precise candle time to prevent duplicates
                 "signal_type": signal_type,
                 "entry_price": engine_output["entry"],
                 "tp": engine_output["tp"],
                 "sl": engine_output["sl"]
             })
+            
+    # Display Live Price vs VWAP Chart for Market Analysis
+    st.subheader(f"📈 {used_symbol} Live Price vs Daily VWAP")
+    st.line_chart(engine_output["plot_df"])
 else:
     st.error("⚠️ Yahoo Finance API is currently rate-limited or offline. Terminal features are active, but new price feeds are delayed.")
 
