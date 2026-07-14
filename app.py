@@ -1,468 +1,265 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
-import pytz
-from sqlalchemy import text
-import time
+import yfinance as yf
+from sqlalchemy import create_engine, text
 import requests
+from datetime import datetime, timedelta
+import pytz
 
-# ==================== PAGE SETUP ====================
-st.set_page_config(page_title="Institutional Trading Terminal", layout="wide", initial_sidebar_state="expanded")
+# Page Configuration
+st.set_page_config(page_title="Institutional Trading Terminal", layout="wide")
 
-st.markdown("""
-<style>
-    /* Premium Dark Institutional Theme */
-    .stApp { background-color: #0A0E17; color: #E2E8F0; font-family: 'Inter', sans-serif; }
-    .main-header { font-size: 1.6rem; font-weight: 600; color: #FFFFFF; border-bottom: 2px solid #2563EB; padding-bottom: 8px; margin-bottom: 15px; }
-    
-    /* Symbol Cards */
-    .symbol-card { background-color: #111827; border: 1px solid #1E293B; border-radius: 8px; padding: 16px; margin: 5px 0; text-align: center; }
-    .symbol-card strong { font-size: 1rem; color: #94A3B8; display: block; margin-bottom: 4px; }
-    .symbol-card .metric-value { font-size: 1.4rem; font-weight: 700; color: #F8FAFC; }
-    
-    /* Badges */
-    .signal-badge { padding: 4px 12px; border-radius: 16px; font-weight: 600; font-size: 0.8rem; display: inline-block; margin-top: 8px; letter-spacing: 0.5px; }
-    .buy { background-color: rgba(16, 185, 129, 0.2); color: #10B981; border: 1px solid rgba(16, 185, 129, 0.5); }
-    .neutral { background-color: rgba(148, 163, 184, 0.1); color: #94A3B8; border: 1px solid rgba(148, 163, 184, 0.4); }
-    .sell { background-color: rgba(239, 68, 68, 0.2); color: #EF4444; border: 1px solid rgba(239, 68, 68, 0.5); }
-    
-    /* KPI Cards */
-    .kpi-card { background-color: #111827; border: 1px solid #1E293B; padding: 16px 8px; text-align: center; border-radius: 8px; height: 100%; display: flex; flex-direction: column; justify-content: center; }
-    .kpi-value { font-size: 1.25rem; font-weight: 700; color: #F8FAFC; margin-bottom: 4px; }
-    .kpi-label { color: #64748B; font-size: 0.7rem; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
-    
-    /* Logic Boxes */
-    .logic-box { background-color: #111827; border-left: 4px solid #3B82F6; padding: 12px 16px; border-radius: 4px; font-size: 0.9rem; margin: 8px 0; color: #CBD5E1; }
-    .logic-green { border-left-color: #10B981; }
-    .logic-red { border-left-color: #EF4444; }
-    .logic-orange { border-left-color: #F59E0B; }
-    .logic-macro { border-left-color: #FF00FF; background-color: rgba(255, 0, 255, 0.05); }
-</style>
-""", unsafe_allow_html=True)
+# ==========================================
+# 1. DATABASE CONNECTION & INITIALIZATION
+# ==========================================
+@st.cache_resource
+def get_db_engine():
+    """Neon Postgres Database connection engine with SSL security."""
+    db_url = st.secrets["DATABASE_URL"]
+    if "?sslmode=" not in db_url:
+        db_url += "?sslmode=require"
+    return create_engine(db_url)
 
-# ==================== SESSION STATE ====================
-if "data_source" not in st.session_state:
-    st.session_state.data_source = "Yahoo Finance (Direct)"
-if "selected_symbol" not in st.session_state:
-    st.session_state.selected_symbol = None
-if "selected_name" not in st.session_state:
-    st.session_state.selected_name = None
-
-def get_pakistan_time():
-    tz = pytz.timezone('Asia/Karachi')
-    return datetime.now(tz).strftime("%d %b %Y | %I:%M:%S %p PKT")
-
-# ==================== DATABASE ENGINE ====================
-def get_conn():
-    try:
-        return st.connection("neon", type="sql")
-    except Exception as e:
-        st.error(f"❌ Database connection failed: {str(e)}")
-        return None
+engine = get_db_engine()
 
 def init_db():
-    conn = get_conn()
-    if conn is None: return False
-    try:
-        with conn.session as s:
-            s.execute(text("""
-                CREATE TABLE IF NOT EXISTS symbols (
-                    symbol_id SERIAL PRIMARY KEY,
-                    ticker TEXT UNIQUE,
-                    name TEXT
-                )
-            """))
-            s.execute(text("""
-                CREATE TABLE IF NOT EXISTS signals_v2 (
-                    signal_id SERIAL PRIMARY KEY,
-                    symbol_id INT REFERENCES symbols(symbol_id),
-                    timestamp TIMESTAMP NOT NULL,
-                    signal_type TEXT,
-                    entry_price REAL,
-                    target_price REAL,
-                    stop_loss REAL,
-                    status TEXT DEFAULT 'PENDING',
-                    result TEXT,
-                    UNIQUE(symbol_id, timestamp, signal_type, entry_price)
-                )
-            """))
-            
-            symbols = [("BTC-USD", "Bitcoin"), ("USDJPY=X", "USD/JPY"), ("NQ=F", "NAS100"), ("GC=F", "Gold")]
-            for t, n in symbols:
-                s.execute(text("INSERT INTO symbols (ticker, name) VALUES (:t, :n) ON CONFLICT DO NOTHING"), {"t": t, "n": n})
-            s.commit()
-            return True
-    except Exception:
-        return False
+    """Initializes schema v2 with strict unique constraints."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS signals_v2 (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                timestamp TIMESTAMP NOT NULL,
+                signal_type VARCHAR(10) NOT NULL,
+                entry_price DOUBLE PRECISION NOT NULL,
+                tp DOUBLE PRECISION NOT NULL,
+                sl DOUBLE PRECISION NOT NULL,
+                status VARCHAR(20) DEFAULT 'PENDING',
+                result VARCHAR(20) DEFAULT 'OPEN',
+                UNIQUE(symbol, timestamp, signal_type, entry_price)
+            );
+        """))
 
-def save_signal(ticker, signal, entry, target, sl):
-    conn = get_conn()
-    if conn is None: return
-    try:
-        with conn.session as s:
-            res = s.execute(text("SELECT symbol_id FROM symbols WHERE ticker = :t"), {"t": ticker}).fetchone()
-            if not res: return
-            sym_id = res[0]
-            now = datetime.now(pytz.timezone('Asia/Karachi')).strftime("%Y-%m-%d %H:%M:%S")
-            
-            s.execute(text("""
-                INSERT INTO signals_v2 (symbol_id, timestamp, signal_type, entry_price, target_price, stop_loss)
-                VALUES (:sid, :ts, :sig, :ent, :tp, :sl)
-                ON CONFLICT (symbol_id, timestamp, signal_type, entry_price) DO NOTHING
-            """), {"sid": sym_id, "ts": now, "sig": signal, "ent": entry, "tp": target, "sl": sl})
-            s.commit()
-    except Exception as e:
-        pass
+init_db()
 
-def update_old_signals(ticker, df):
-    conn = get_conn()
-    if conn is None: return
-    try:
-        with conn.session as s:
-            rows = s.execute(text("""
-                SELECT sig.signal_id, sig.timestamp, sig.signal_type, sig.target_price, sig.stop_loss 
-                FROM signals_v2 sig
-                JOIN symbols sym ON sig.symbol_id = sym.symbol_id
-                WHERE sym.ticker = :t AND sig.status = 'PENDING'
-            """), {"t": ticker}).fetchall()
-            
-            if not rows: return
-            
-            df['Datetime'] = pd.to_datetime(df['Datetime']).dt.tz_localize(None)
-            for row in rows:
-                sig_id, sig_time, sig_type, target, sl = row
-                future_candles = df[df['Datetime'] > pd.to_datetime(sig_time)]
-                if future_candles.empty: continue
-                
-                max_high = float(future_candles['High'].max())
-                min_low = float(future_candles['Low'].min())
-                
-                res = None
-                if "BUY" in sig_type:
-                    if max_high >= target: res = "WIN"
-                    elif min_low <= sl: res = "LOSS"
-                elif "SELL" in sig_type:
-                    if min_low <= target: res = "WIN"
-                    elif max_high >= sl: res = "LOSS"
-                
-                if res:
-                    s.execute(text("UPDATE signals_v2 SET status='CLOSED', result=:res WHERE signal_id=:id"), {"res": res, "id": sig_id})
-            s.commit()
-    except Exception:
-        pass
+# ==========================================
+# 2. ADMIN DATABASE OPERATIONS
+# ==========================================
+def cancel_all_pending_signals():
+    """Cancels all active pending signals to free up the terminal."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE signals_v2 
+            SET status = 'CLOSED', result = 'CANCELLED' 
+            WHERE status = 'PENDING'
+        """))
 
-def get_stats(ticker):
-    conn = get_conn()
-    if conn is None: return None, 0
-    try:
-        with conn.session as s:
-            df_sql = s.execute(text("""
-                SELECT result FROM signals_v2 sig 
-                JOIN symbols sym ON sig.symbol_id = sym.symbol_id 
-                WHERE sym.ticker=:t AND sig.status='CLOSED' ORDER BY timestamp DESC LIMIT 20
-            """), {"t": ticker}).fetchall()
-            
-            if len(df_sql) == 0: return None, 0
-            wins = sum(1 for r in df_sql if r[0] == 'WIN')
-            return round((wins / len(df_sql)) * 100), len(df_sql)
-    except Exception:
-        return None, 0
+def reset_entire_database():
+    """Clears all logged signals from the database."""
+    with engine.begin() as conn:
+        conn.execute(text("TRUNCATE TABLE signals_v2 RESTART IDENTITY;"))
 
-# ==================== MACRO CALENDAR (NEWS FILTER) ====================
-@st.cache_data(ttl=3600, show_spinner=False)
-def check_macro_news():
+# ==========================================
+# 3. AUTO-TIMEOUT & SIGNAL UPDATE ENGINE
+# ==========================================
+def run_auto_timeout_and_updates(symbol, current_price):
+    """Cancels >24h stale signals and checks TP/SL hits for active ones."""
+    utc_now = datetime.now(pytz.utc)
+    
+    with engine.begin() as conn:
+        # 1. 24-Hour Auto Timeout Logic
+        conn.execute(text("""
+            UPDATE signals_v2 
+            SET status = 'CLOSED', result = 'CANCELLED' 
+            WHERE status = 'PENDING' 
+            AND timestamp < NOW() - INTERVAL '24 hours'
+        """))
+        
+        # 2. Check pending signals status based on latest price
+        pending_signals = conn.execute(text(
+            "SELECT id, signal_type, entry_price, tp, sl FROM signals_v2 WHERE symbol = :symbol AND status = 'PENDING'"
+        ), {"symbol": symbol}).fetchall()
+        
+        for sig in pending_signals:
+            sig_id, sig_type, entry, tp, sl = sig
+            
+            if sig_type == "BUY":
+                if current_price >= tp:
+                    conn.execute(text("UPDATE signals_v2 SET status = 'CLOSED', result = 'WIN' WHERE id = :id"), {"id": sig_id})
+                elif current_price <= sl:
+                    conn.execute(text("UPDATE signals_v2 SET status = 'CLOSED', result = 'LOSS' WHERE id = :id"), {"id": sig_id})
+            
+            elif sig_type == "SELL":
+                if current_price <= tp:
+                    conn.execute(text("UPDATE signals_v2 SET status = 'CLOSED', result = 'WIN' WHERE id = :id"), {"id": sig_id})
+                elif current_price >= sl:
+                    conn.execute(text("UPDATE signals_v2 SET status = 'CLOSED', result = 'LOSS' WHERE id = :id"), {"id": sig_id})
+
+# ==========================================
+# 4. FOREX FACTORY NEWS FILTER
+# ==========================================
+def is_macro_news_blocked():
+    """Checks if there is any high impact USD news today to block trading."""
     try:
-        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=5)
-        news_list = []
+        url = "https://nfs.forexfactory1.com/ff_calendar_thisweek.json"
+        response = requests.get(url, timeout=5)
         if response.status_code == 200:
-            data = response.json()
-            for item in data:
-                # Sirf USD ki High Impact news filter kar rahe hain
-                if item['impact'] == 'High' and item['country'] == 'USD':
-                    news_time = pd.to_datetime(item['date']).tz_convert('America/New_York')
-                    news_list.append((item['title'], news_time))
-        return news_list
-    except:
-        return []
+            events = response.json()
+            today_str = datetime.now(pytz.timezone('America/New_York')).strftime('%Y-%m-%d')
+            for ev in events:
+                ev_date = ev.get("date", "")
+                if today_str in ev_date:
+                    if ev.get("country") == "USD" and ev.get("impact") == "High":
+                        return True
+    except Exception:
+        pass
+    return False
 
-# ==================== MARKET DATA FETCHER ====================
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_ohlcv(ticker, interval="15m", period="5d"):
-    try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
-        if df is None or df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = ['_'.join(col).strip() for col in df.columns.values]
-        df = df.reset_index()
-        df.columns = [col.split('_')[0] if '_' in col else col for col in df.columns]
-        for c in ['Open', 'High', 'Low', 'Close']: df[c] = df[c].astype(float)
-        if 'Volume' not in df.columns: df['Volume'] = 1000.0
-        return df[['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-    except:
+# ==========================================
+# 5. CORE INSTITUTIONAL LOGIC
+# ==========================================
+def generate_signals_engine(symbol, timeframe="15m"):
+    """Core algorithmic engine utilizing VWAP, Liquidity Sweeps and relaxed Volume spikes."""
+    df = yf.download(symbol, period="5d", interval=timeframe)
+    if df.empty:
         return None
-
-# ==================== INSTITUTIONAL LOGIC ENGINE ====================
-def detect_sessions_and_vwap(df):
-    if df['Datetime'].dt.tz is None:
-        df['Datetime_UTC'] = df['Datetime'].dt.tz_localize('UTC')
-    else:
-        df['Datetime_UTC'] = df['Datetime'].dt.tz_convert('UTC')
-        
-    df_ny = df['Datetime_UTC'].dt.tz_convert('America/New_York')
-    df['Date_NY'] = df_ny.dt.date
     
-    hour = df_ny.dt.hour
-    conditions = [
-        (hour >= 2) & (hour < 5),   # London Killzone
-        (hour >= 7) & (hour < 11),  # NY AM Killzone
-        (hour >= 13) & (hour < 16)  # NY PM Killzone
-    ]
-    choices = ['London Session', 'NY AM Session', 'NY PM Session']
-    df['Session'] = np.select(conditions, choices, default='Asian/Consolidation Zone')
+    # Clean Column Names
+    df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
     
-    df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
-    df['PV'] = df['Typical_Price'] * df['Volume']
-    df['Cum_PV'] = df.groupby('Date_NY')['PV'].cumsum()
-    df['Cum_Vol'] = df.groupby('Date_NY')['Volume'].cumsum()
-    df['VWAP'] = df['Cum_PV'] / df['Cum_Vol'].replace(0, 1)
+    # Calculate Daily VWAP
+    cum_vol = df['Volume'].cumsum()
+    cum_vol_price = (df['Close'] * df['Volume']).cumsum()
+    df['VWAP'] = cum_vol_price / cum_vol
     
-    return df
-
-def detect_smart_money_structure(df, lookback=30):
-    if len(df) < lookback + 5: return "Neutral Structure", 0, False
+    # Volatility and Average Volume
+    df['ATR'] = df['Close'].diff().abs().rolling(14).mean()
+    df['Vol_MA'] = df['Volume'].rolling(20).mean()
     
-    past_data = df.iloc[-(lookback+3):-3]
-    swing_high = float(past_data['High'].max())
-    swing_low = float(past_data['Low'].min())
+    # Lookback for Swings
+    lookback = 30
+    df['Recent_High'] = df['High'].rolling(lookback).max()
+    df['Recent_Low'] = df['Low'].rolling(lookback).min()
     
-    recent = df.iloc[-3:]
-    current_vol = float(df['Volume'].iloc[-1])
-    avg_vol = float(df['Volume'].rolling(20).mean().iloc[-1])
-    vol_spike = current_vol > (avg_vol * 1.2)
+    last_row = df.iloc[-1]
+    prev_row = df.iloc[-2]
     
-    if (recent['High'].max() > swing_high) and (df['Close'].iloc[-1] < swing_high):
-        return f"Buyside Liquidity Swept @ {swing_high:.2f}", -1, vol_spike
-        
-    if (recent['Low'].min() < swing_low) and (df['Close'].iloc[-1] > swing_low):
-        return f"Sellside Liquidity Swept @ {swing_low:.2f}", 1, vol_spike
-        
-    return "Consolidating Inside Range", 0, vol_spike
-
-def calculate_institutional_signal(df, ticker):
-    if df is None or len(df) < 50: return None
-    df = detect_sessions_and_vwap(df)
+    current_price = last_row['Close']
+    current_volume = last_row['Volume']
+    avg_volume = last_row['Vol_MA']
+    vwap = last_row['VWAP']
+    atr = last_row['ATR']
     
-    last = df.iloc[-1]
-    price = float(last['Close'])
-    vwap = float(last['VWAP'])
-    session = last['Session']
-    current_time_ny = df['Datetime_UTC'].iloc[-1].tz_convert('America/New_York')
+    # Relaxed Volume Spike check for better Scalping (1.2x)
+    volume_spike = current_volume > (avg_volume * 1.2)
     
-    sweep_msg, sweep_dir, has_vol_spike = detect_smart_money_structure(df)
+    # Liquidity Sweep Detections
+    liquidity_sweep_bullish = (prev_row['Low'] <= last_row['Recent_Low']) and (current_price > last_row['Recent_Low'])
+    liquidity_sweep_bearish = (prev_row['High'] >= last_row['Recent_High']) and (current_price < last_row['Recent_High'])
     
-    tr = pd.DataFrame()
-    tr['1'] = df['High'] - df['Low']
-    tr['2'] = (df['High'] - df['Close'].shift()).abs()
-    tr['3'] = (df['Low'] - df['Close'].shift()).abs()
-    atr = float(tr.max(axis=1).rolling(14).mean().iloc[-1])
-    
-    reasons = []
-    bullish_pts = 0
-    bearish_pts = 0
-    
-    if price > vwap:
-        bullish_pts += 1
-        reasons.append("✅ Price sustaining ABOVE Daily VWAP")
-    else:
-        bearish_pts += 1
-        reasons.append("❌ Price heavily BELOW Daily VWAP")
-        
-    if sweep_dir == 1:
-        if has_vol_spike:
-            bullish_pts += 2
-            reasons.append(f"🟢 {sweep_msg} with Strong Volume Spike (+2)")
-        else:
-            bullish_pts += 1
-            reasons.append(f"⚠️ {sweep_msg} but NO Volume Spike (Weak)")
-            
-    elif sweep_dir == -1:
-        if has_vol_spike:
-            bearish_pts += 2
-            reasons.append(f"🔴 {sweep_msg} with Strong Volume Spike (+2)")
-        else:
-            bearish_pts += 1
-            reasons.append(f"⚠️ {sweep_msg} but NO Volume Spike (Weak)")
-    else:
-        reasons.append(f"⚪ {sweep_msg}")
-        
-    reasons.append(f"⏱️ Active Trading Window: {session}")
-    is_active_session = "Session" in session
+    # Macro Filter Check
+    news_block = is_macro_news_blocked()
     
     signal = "WAIT"
-    badge = "neutral"
+    entry = current_price
+    tp = 0.0
+    sl = 0.0
     
-    if is_active_session:
-        if bullish_pts >= 3: 
-            signal, badge = "BUY", "buy"
-        elif bearish_pts >= 3:
-            signal, badge = "SELL", "sell"
-    else:
-        reasons.append("⚠️ Low Volume Environment: Algorithms set to WAIT.")
-        
-    # --- MACRO NEWS FILTER (THE BLOCKER) ---
-    upcoming_news = check_macro_news()
-    macro_block_active = False
-    
-    for title, news_time in upcoming_news:
-        # Check if current time is within +/- 30 minutes of High Impact News
-        time_diff_mins = (current_time_ny - news_time).total_seconds() / 60.0
-        if -30 <= time_diff_mins <= 30:
-            macro_block_active = True
-            reasons.append(f"🚨 MACRO BLOCK ACTIVE: {title} scheduled at {news_time.strftime('%I:%M %p EST')}")
-            break
+    if not news_block:
+        if current_price > vwap and liquidity_sweep_bullish and volume_spike:
+            signal = "BUY"
+            sl = current_price - (1.5 * atr)
+            tp = current_price + (3.0 * atr)
+        elif current_price < vwap and liquidity_sweep_bearish and volume_spike:
+            signal = "SELL"
+            sl = current_price + (1.5 * atr)
+            tp = current_price - (3.0 * atr)
             
-    if macro_block_active:
-        signal, badge = "WAIT", "neutral"
-        
-    sl_dist = 2.0 * atr
-    tp_dist = 5.0 * atr
-    
-    sl = price - sl_dist if signal == "BUY" else price + sl_dist if signal == "SELL" else price
-    tp = price + tp_dist if signal == "BUY" else price - tp_dist if signal == "SELL" else price
-    rr = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0
-    
     return {
-        "signal": signal, "badge": badge, "price": price, 
-        "vwap": vwap, "session": session, "sweep": sweep_msg,
-        "macro_block": macro_block_active,
-        "sl": round(sl, 2), "tp": round(tp, 2), "rr": rr, "reasons": reasons
+        "signal": signal,
+        "entry": entry,
+        "tp": tp,
+        "sl": sl,
+        "vwap": vwap,
+        "current_price": current_price,
+        "news_blocked": news_block
     }
 
-# ==================== UI RENDERING ====================
-st.markdown('<div class="main-header">Institutional Order Flow Terminal</div>', unsafe_allow_html=True)
-st.caption(f"📅 {get_pakistan_time()} | Pure Price Action & Time Architecture")
+# ==========================================
+# 6. STREAMLIT UI & DASHBOARD
+# ==========================================
+st.title("🛡️ Institutional Grade Algorithmic Terminal")
 
-db_initialized = init_db()
-if not db_initialized: st.warning("Database configuration missing or failed.")
+# Sidebar - Asset Selection
+st.sidebar.header("Asset Settings")
+symbol = st.sidebar.selectbox("Select Asset", ["XAUUSD=F", "BTC-USD", "ETH-USD"], index=0)
+timeframe = st.sidebar.selectbox("Select Timeframe", ["5m", "15m", "1h"], index=1)
 
-MAIN_SYMBOLS = {"Bitcoin (BTC)": "BTC-USD", "NAS100": "NQ=F", "Gold": "GC=F"}
+# Sidebar - Admin Dashboard Panel
+st.sidebar.markdown("---")
+st.sidebar.subheader("⚙️ Admin Control Panel")
+admin_password = st.sidebar.text_input("Enter Admin Password", type="password")
 
-cols = st.columns(3)
-for idx, (name, ticker) in enumerate(MAIN_SYMBOLS.items()):
-    with cols[idx]:
-        qdf = fetch_ohlcv(ticker, interval="15m", period="3d")
-        price, sig, badge = 0.0, "SYNCING...", "neutral"
-        if qdf is not None:
-            price = float(qdf['Close'].iloc[-1])
-            analysis = calculate_institutional_signal(qdf, ticker)
-            if analysis:
-                sig, badge = analysis['signal'], analysis['badge']
-                
-        st.markdown(f"""
-            <div class='symbol-card'>
-                <strong>{name}</strong>
-                <div class='metric-value'>{price:,.2f}</div>
-                <span class='signal-badge {badge}'>{sig}</span>
-            </div>
-        """, unsafe_allow_html=True)
-        if st.button(f"Load Order Flow", key=f"btn_{idx}", use_container_width=True):
-            st.session_state.selected_symbol = ticker
-            st.session_state.selected_name = name
+if admin_password == "mubeen123":
+    st.sidebar.success("Access Granted!")
+    col_admin1, col_admin2 = st.sidebar.columns(2)
+    with col_admin1:
+        if st.button("🔴 Cancel All Pending"):
+            cancel_all_pending_signals()
+            st.sidebar.success("All pending updated to CANCELLED!")
+            st.rerun()
+    with col_admin2:
+        if st.button("⚠️ Reset Entire DB"):
+            reset_entire_database()
+            st.sidebar.warning("Database tables cleared!")
             st.rerun()
 
-if st.session_state.get("selected_symbol"):
-    ticker = st.session_state.selected_symbol
-    name = st.session_state.get("selected_name", ticker)
-    st.divider()
-    
-    col_hdr, col_tf = st.columns([2, 1])
-    with col_hdr:
-        st.markdown(f"<h3 style='margin:0;'>{name} <span style='color:#64748B; font-weight:400;'>| Execution Engine</span></h3>", unsafe_allow_html=True)
-    with col_tf:
-        tf_lower = st.selectbox("Execution Timeframe", ["5m", "15m"], index=1)
-        
-    df_lower = fetch_ohlcv(ticker, interval=tf_lower, period="5d")
-    
-    if df_lower is None or len(df_lower) < 50:
-        st.error("Awaiting market data depth. Please resync.")
-        st.stop()
-        
-    analysis = calculate_institutional_signal(df_lower, ticker)
-    
-    if analysis:
-        if analysis['signal'] in ["BUY", "SELL"] and db_initialized:
-            save_signal(ticker, analysis['signal'], analysis['price'], analysis['tp'], analysis['sl'])
-        if db_initialized:
-            update_old_signals(ticker, df_lower)
-            
-        st.markdown("<br>", unsafe_allow_html=True)
-        kpi_cols = st.columns(5)
-        with kpi_cols[0]:
-            st.markdown(f"<div class='kpi-card'><span class='kpi-value'>{analysis['price']:,.2f}</span><span class='kpi-label'>Price</span></div>", unsafe_allow_html=True)
-        with kpi_cols[1]:
-            st.markdown(f"<div class='kpi-card'><span class='kpi-value'>{analysis['vwap']:,.2f}</span><span class='kpi-label'>Daily VWAP</span></div>", unsafe_allow_html=True)
-        with kpi_cols[2]:
-            st.markdown(f"<div class='kpi-card'><span class='kpi-value' style='color:#3B82F6;'>{analysis['session'].split(' ')[0]}</span><span class='kpi-label'>Active Zone</span></div>", unsafe_allow_html=True)
-        with kpi_cols[3]:
-            st.markdown(f"<div class='kpi-card'><span class='kpi-value'>{analysis['rr']} R</span><span class='kpi-label'>Risk:Reward</span></div>", unsafe_allow_html=True)
-        with kpi_cols[4]:
-            winrate, total = get_stats(ticker) if db_initialized else (None, 0)
-            wr_str = f"{winrate}%" if winrate is not None else "--"
-            st.markdown(f"<div class='kpi-card'><span class='kpi-value'>{wr_str}</span><span class='kpi-label'>Edge Win-Rate</span></div>", unsafe_allow_html=True)
+# Run Engine and Auto-Timeout Updates
+engine_output = generate_signals_engine(symbol, timeframe)
 
-        st.markdown("<br>", unsafe_allow_html=True)
+if engine_output:
+    current_price = engine_output["current_price"]
+    run_auto_timeout_and_updates(symbol, current_price)
+    
+    # Display Status Cards
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Current Market Price", f"{current_price:.2f}")
+    with col2:
+        st.metric("Daily VWAP Level", f"{engine_output['vwap']:.2f}")
+    with col3:
+        status_text = "🚨 MACRO NEWS BLOCK" if engine_output["news_blocked"] else "⚡ RUNNING"
+        st.metric("News Filter Status", status_text)
         
-        # Display Macro Block visual warning if active
-        if analysis['macro_block']:
-            st.markdown(f"""
-                <div class='logic-box logic-macro'>
-                    <b style="color:#FF00FF;">🚨 MACRO NEWS EMBARGO ACTIVE</b><br>
-                    High-impact USD event detected. All algorithmic entries are blocked to prevent slippage and spread manipulation.
-                </div>
-            """, unsafe_allow_html=True)
+    # Process New Signals
+    signal_type = engine_output["signal"]
+    if signal_type in ["BUY", "SELL"]:
+        # Save to Neon DB with unique constraints bypass
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO signals_v2 (symbol, timestamp, signal_type, entry_price, tp, sl, status, result)
+                VALUES (:symbol, NOW(), :signal_type, :entry_price, :tp, :sl, 'PENDING', 'OPEN')
+                ON CONFLICT (symbol, timestamp, signal_type, entry_price) DO NOTHING
+            """), {
+                "symbol": symbol,
+                "signal_type": signal_type,
+                "entry_price": engine_output["entry"],
+                "tp": engine_output["tp"],
+                "sl": engine_output["sl"]
+            })
+            
+    # Display Current Signals Status from DB
+    st.subheader("📊 Live Tracking Dashboard")
+    with engine.connect() as conn:
+        active_signals = conn.execute(text(
+            "SELECT timestamp, signal_type, entry_price, tp, sl, status, result FROM signals_v2 ORDER BY id DESC LIMIT 10"
+        )).fetchall()
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### Liquidity & Structure")
-            sweep_color = "logic-orange" if "Consolidating" in analysis['sweep'] else "logic-green" if "Sellside" in analysis['sweep'] else "logic-red"
-            st.markdown(f"""
-                <div class='logic-box {sweep_color}'>
-                    <b>Market Matrix:</b><br>{analysis['sweep']}<br><br>
-                    <b>Institutional Bias (VWAP):</b><br>
-                    {'BULLISH 🟢' if analysis['price'] > analysis['vwap'] else 'BEARISH 🔴'}
-                </div>
-            """, unsafe_allow_html=True)
-            
-            with st.expander("View Algorithm Execution Steps"):
-                for r in analysis['reasons']:
-                    st.write(f"• {r}")
-                    
-        with col2:
-            st.markdown("#### Strict Risk Parameters")
-            st.markdown(f"""
-                <div class='logic-box border-blue'>
-                    <b>Entry Trigger:</b> {analysis['price']:,.2f}<br>
-                    <hr style="margin: 8px 0; border-color: #334155;">
-                    <b style="color: #EF4444;">Invalidation (Stop Loss):</b> {analysis['sl']:,.2f}<br>
-                    <b style="color: #10B981;">Liquidity Target (TP):</b> {analysis['tp']:,.2f}<br>
-                    <span style="font-size:0.8rem; color:#94A3B8;">Dynamic R:R maintains positive expectancy even at 40% win rate.</span>
-                </div>
-            """, unsafe_allow_html=True)
-            
-        st.divider()
-        st.markdown("#### Real-Time Edge Validation (Neon DB)")
-        if db_initialized:
-            winrate, total = get_stats(ticker)
-            if winrate is not None:
-                st.progress(winrate / 100, text=f"Last {total} Signals Track Record")
-                st.caption("Data reflects strict multi-candle walk-forward testing without repaint.")
-            else:
-                st.info("System initializing. Awaiting closed trade data logging.")
-        else:
-            st.warning("Database disconnected.")
+    if active_signals:
+        df_signals = pd.DataFrame(active_signals, columns=["Time", "Type", "Entry Price", "Take Profit", "Stop Loss", "Status", "Result"])
+        st.dataframe(df_signals, use_container_width=True)
+    else:
+        st.info("No active signals recorded yet. Waiting for structural sweeps...")
 else:
-    st.info("Select an instrument from the terminal overhead to sync order flow logic.")
+    st.error("Failed to retrieve market data. Check connection settings.")
