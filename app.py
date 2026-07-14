@@ -24,8 +24,9 @@ def get_db_engine():
 engine = get_db_engine()
 
 def init_db():
-    """Initializes schema v2 with strict unique constraints."""
+    """Initializes schema v2 with strict unique constraints and migrates if needed."""
     with engine.begin() as conn:
+        # Table creation if it doesn't exist
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS signals_v2 (
                 id SERIAL PRIMARY KEY,
@@ -40,6 +41,23 @@ def init_db():
                 UNIQUE(symbol, timestamp, signal_type, entry_price)
             );
         """))
+        
+        # Schema migration check: If 'id' column is missing from pre-existing table, alter table
+        try:
+            result = conn.execute(text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'signals_v2' 
+                  AND column_name = 'id' 
+                  AND table_schema = 'public';
+            """)).fetchone()
+            
+            if not result:
+                # Add 'id' column dynamically if it's missing from previous schema
+                conn.execute(text("ALTER TABLE signals_v2 ADD COLUMN id SERIAL PRIMARY KEY;"))
+        except Exception as e:
+            # Gracefully log any migration exceptions
+            st.sidebar.warning(f"Database migration note: {e}")
 
 init_db()
 
@@ -132,13 +150,13 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
         if df.empty or len(df) < 35:
             return None
         
-        # Clean Column Names
+        # Clean Column Names (Handles multi-index column structures smoothly)
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         
-        # Calculate Daily VWAP
+        # Calculate Daily VWAP with division-by-zero safety
         cum_vol = df['Volume'].cumsum()
         cum_vol_price = (df['Close'] * df['Volume']).cumsum()
-        df['VWAP'] = cum_vol_price / cum_vol
+        df['VWAP'] = (cum_vol_price / cum_vol).fillna(df['Close'])
         
         # Volatility and Average Volume
         df['ATR'] = df['Close'].diff().abs().rolling(14).mean()
