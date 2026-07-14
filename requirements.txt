@@ -1,8 +1,8 @@
 streamlit==1.41.0
+sqlalchemy
+psycopg2-binary
 yfinance
+requests
+pytz
 pandas
 numpy
-pytz
-SQLAlchemy
-psycopg2-binary
-requests
