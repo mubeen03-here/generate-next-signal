@@ -141,7 +141,84 @@ def fetch_ticker_data(symbol, timeframe):
     return yf.download(symbol, period="5d", interval=timeframe, progress=False)
 
 # ==========================================
-# 6. CORE INSTITUTIONAL LOGIC (WITH FALLBACK)
+# 6. CUSTOM SVG CHART GENERATOR (BYPASSING ALTAIR BUG)
+# ==========================================
+def generate_svg_chart(df, width=900, height=350):
+    """Generates a responsive and beautiful SVG line chart for Close and VWAP."""
+    if df is None or df.empty:
+        return "<div style='color: white; padding: 20px;'>No market analysis data available for chart visualization.</div>"
+    
+    # Reset index to extract sequential intervals
+    df_reset = df.reset_index()
+    close_vals = df_reset['Close'].tolist()
+    vwap_vals = df_reset['VWAP'].tolist()
+    dates = df_reset.iloc[:, 0].dt.strftime('%H:%M').tolist()
+    
+    # Scale ranges with dynamic padding
+    all_vals = close_vals + vwap_vals
+    min_val = min(all_vals) * 0.999
+    max_val = max(all_vals) * 1.001
+    val_range = max_val - min_val if max_val != min_val else 1.0
+    
+    padding_top = 25
+    padding_bottom = 35
+    padding_left = 70
+    padding_right = 25
+    
+    plot_width = width - padding_left - padding_right
+    plot_height = height - padding_top - padding_bottom
+    
+    def get_x(i):
+        return padding_left + (i / (len(close_vals) - 1)) * plot_width
+        
+    def get_y(val):
+        return padding_top + plot_height - ((val - min_val) / val_range) * plot_height
+        
+    # Plot line paths
+    close_points = [f"{get_x(i):.1f},{get_y(close_vals[i]):.1f}" for i in range(len(close_vals))]
+    vwap_points = [f"{get_x(i):.1f},{get_y(vwap_vals[i]):.1f}" for i in range(len(vwap_vals))]
+    
+    close_path = "M " + " L ".join(close_points)
+    vwap_path = "M " + " L ".join(vwap_points)
+    
+    # Construct complete responsive SVG code
+    svg = f"""
+    <svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" style="background-color: #0E1117; border-radius: 8px; font-family: system-ui, sans-serif;">
+        <!-- Axes lines -->
+        <line x1="{padding_left}" y1="{padding_top}" x2="{padding_left}" y2="{padding_top + plot_height}" stroke="#31333F" stroke-width="1"/>
+        <line x1="{padding_left}" y1="{padding_top + plot_height}" x2="{width - padding_right}" y2="{padding_top + plot_height}" stroke="#31333F" stroke-width="1"/>
+        
+        <!-- Y Gridlines and Labels -->
+        <text x="{padding_left - 12}" y="{get_y(min_val) + 4}" fill="#808495" font-size="11" text-anchor="end">{min_val:.2f}</text>
+        <text x="{padding_left - 12}" y="{get_y((min_val + max_val)/2) + 4}" fill="#808495" font-size="11" text-anchor="end">{(min_val + max_val)/2:.2f}</text>
+        <text x="{padding_left - 12}" y="{get_y(max_val) + 4}" fill="#808495" font-size="11" text-anchor="end">{max_val:.2f}</text>
+        
+        <line x1="{padding_left}" y1="{get_y((min_val+max_val)/2)}" x2="{width - padding_right}" y2="{get_y((min_val+max_val)/2)}" stroke="#262730" stroke-width="1" stroke-dasharray="4"/>
+        <line x1="{padding_left}" y1="{get_y(max_val)}" x2="{width - padding_right}" y2="{get_y(max_val)}" stroke="#262730" stroke-width="1" stroke-dasharray="4"/>
+        
+        <!-- X Labels (First, Middle, Last) -->
+        <text x="{get_x(0)}" y="{height - 12}" fill="#808495" font-size="11" text-anchor="middle">{dates[0]}</text>
+        <text x="{get_x(len(dates)//2)}" y="{height - 12}" fill="#808495" font-size="11" text-anchor="middle">{dates[len(dates)//2]}</text>
+        <text x="{get_x(len(dates)-1)}" y="{height - 12}" fill="#808495" font-size="11" text-anchor="middle">{dates[-1]}</text>
+        
+        <!-- Daily VWAP line (Dashed Neon Coral) -->
+        <path d="{vwap_path}" fill="none" stroke="#FF4B4B" stroke-width="2" stroke-dasharray="3"/>
+        
+        <!-- Close Price line (Cyan Neon Solid) -->
+        <path d="{close_path}" fill="none" stroke="#00F0FF" stroke-width="2.5"/>
+        
+        <!-- Custom Legends -->
+        <rect x="{padding_left + 20}" y="10" width="10" height="10" fill="#00F0FF" rx="2"/>
+        <text x="{padding_left + 35}" y="20" fill="#F0F2F6" font-size="12">Close Price</text>
+        
+        <rect x="{padding_left + 140}" y="10" width="10" height="10" fill="#FF4B4B" rx="2"/>
+        <text x="{padding_left + 155}" y="20" fill="#F0F2F6" font-size="12">Daily VWAP</text>
+    </svg>
+    """
+    return svg
+
+# ==========================================
+# 7. CORE INSTITUTIONAL LOGIC (WITH FALLBACK)
 # ==========================================
 def generate_signals_engine(selected_symbol, timeframe="15m"):
     """Core algorithmic engine with Yahoo Finance fallback protection."""
@@ -230,7 +307,7 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
         return None
 
 # ==========================================
-# 7. STREAMLIT UI & DASHBOARD
+# 8. STREAMLIT UI & DASHBOARD
 # ==========================================
 st.title("🛡️ Institutional Grade Algorithmic Terminal")
 
@@ -295,9 +372,10 @@ if engine_output:
                 "sl": engine_output["sl"]
             })
             
-    # Display Live Price vs VWAP Chart for Market Analysis
+    # Display Live Price vs VWAP Chart using safe custom SVG (Anti-Crash)
     st.subheader(f"📈 {used_symbol} Live Price vs Daily VWAP")
-    st.line_chart(engine_output["plot_df"])
+    chart_svg = generate_svg_chart(engine_output["plot_df"])
+    st.components.v1.html(chart_svg, height=360)
 else:
     st.error("⚠️ Yahoo Finance API is currently rate-limited or offline. Terminal features are active, but new price feeds are delayed.")
 
