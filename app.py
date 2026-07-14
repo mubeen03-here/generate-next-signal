@@ -263,3 +263,4 @@ if engine_output:
         st.info("No active signals recorded yet. Waiting for structural sweeps...")
 else:
     st.error("Failed to retrieve market data. Check connection settings.")
+    
