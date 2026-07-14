@@ -4,7 +4,7 @@ import numpy as np
 import yfinance as yf
 from sqlalchemy import create_engine, text
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 # Page Configuration
@@ -15,39 +15,37 @@ st.set_page_config(page_title="Institutional Trading Terminal", layout="wide")
 # ==========================================
 @st.cache_resource
 def get_db_engine():
-    """Neon Postgres Database connection engine with SSL security."""
+    """Neon Postgres Connection engine with robust pooling and pre-ping."""
     db_url = st.secrets["DATABASE_URL"]
     if "?sslmode=" not in db_url:
         db_url += "?sslmode=require"
-    return create_engine(db_url)
+    
+    # Pooling added to prevent connection drops on Neon DB
+    return create_engine(
+        db_url,
+        pool_size=10,
+        max_overflow=20,
+        pool_recycle=300,
+        pool_pre_ping=True
+    )
 
 engine = get_db_engine()
 
 def init_db():
-    """Initializes schema v2. Safely drops and recreates table if 'id' column is missing."""
-    with engine.begin() as conn:
-        # Check if table already exists
-        table_exists = conn.execute(text("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'signals_v2' AND table_schema = 'public'
-            );
-        """)).scalar()
-        
-        if table_exists:
-            # Check if 'id' column exists inside the table
-            id_exists = conn.execute(text("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.columns 
-                    WHERE table_name = 'signals_v2' AND column_name = 'id' AND table_schema = 'public'
-                );
-            """)).scalar()
+    """Initializes schema and automatically handles legacy table reconstruction if corrupted."""
+    recreate = False
+    
+    # Check if we can safely query the 'id' column on signals_v2
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("SELECT id FROM signals_v2 LIMIT 1;"))
+        except Exception:
+            recreate = True
             
-            # If table exists but 'id' column is missing, drop it to reset the corrupted schema
-            if not id_exists:
-                conn.execute(text("DROP TABLE IF EXISTS signals_v2 CASCADE;"))
-        
-        # Create table with correct and complete schema
+    with engine.begin() as conn:
+        if recreate:
+            conn.execute(text("DROP TABLE IF EXISTS signals_v2 CASCADE;"))
+            
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS signals_v2 (
                 id SERIAL PRIMARY KEY,
@@ -63,6 +61,7 @@ def init_db():
             );
         """))
 
+# Run database configuration
 init_db()
 
 # ==========================================
@@ -137,24 +136,32 @@ def is_macro_news_blocked():
     return False
 
 # ==========================================
-# 5. CORE INSTITUTIONAL LOGIC (WITH FALLBACK)
+# 5. CACHED DATA DOWNLOADING (ANTI-RATE LIMIT)
+# ==========================================
+@st.cache_data(ttl=120)  # Caches data for 2 minutes to prevent Yahoo 429 block
+def fetch_ticker_data(symbol, timeframe):
+    """Downloads and returns market data from yfinance."""
+    return yf.download(symbol, period="5d", interval=timeframe, progress=False)
+
+# ==========================================
+# 6. CORE INSTITUTIONAL LOGIC (WITH FALLBACK)
 # ==========================================
 def generate_signals_engine(selected_symbol, timeframe="15m"):
     """Core algorithmic engine with Yahoo Finance fallback protection."""
     try:
         actual_symbol = selected_symbol
-        df = yf.download(actual_symbol, period="5d", interval=timeframe, progress=False)
+        df = fetch_ticker_data(actual_symbol, timeframe)
         
-        # Fallback Mechanism: Agar Yahoo data block kare, to Crypto par shift ho jaye
+        # Fallback Mechanism: If Yahoo data is blocked, switch to Crypto
         if df.empty or len(df) < 35:
             st.warning(f"⚠️ {actual_symbol} data blocked by Yahoo API. Auto-switching to BTC-USD Fallback.")
             actual_symbol = "BTC-USD"
-            df = yf.download(actual_symbol, period="5d", interval=timeframe, progress=False)
+            df = fetch_ticker_data(actual_symbol, timeframe)
             
         if df.empty or len(df) < 35:
             return None
         
-        # Clean Column Names
+        # Clean Column Names (Handles MultiIndex columns safely)
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         
         # Calculate Daily VWAP
@@ -173,6 +180,11 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
         
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
+        
+        # Extract candle timestamp for precise DB constraint match
+        candle_timestamp = df.index[-1]
+        if candle_timestamp.tzinfo is not None:
+            candle_timestamp = candle_timestamp.tz_convert('UTC').tz_localize(None)
         
         current_price = float(last_row['Close'])
         current_volume = float(last_row['Volume'])
@@ -213,13 +225,14 @@ def generate_signals_engine(selected_symbol, timeframe="15m"):
             "sl": sl,
             "vwap": vwap,
             "current_price": current_price,
-            "news_blocked": news_block
+            "news_blocked": news_block,
+            "timestamp": candle_timestamp  # Pass the precise candle time
         }
     except Exception as e:
         return None
 
 # ==========================================
-# 6. STREAMLIT UI & DASHBOARD
+# 7. STREAMLIT UI & DASHBOARD
 # ==========================================
 st.title("🛡️ Institutional Grade Algorithmic Terminal")
 
@@ -271,18 +284,22 @@ if engine_output:
         with engine.begin() as conn:
             conn.execute(text("""
                 INSERT INTO signals_v2 (symbol, timestamp, signal_type, entry_price, tp, sl, status, result)
-                VALUES (:symbol, NOW(), :signal_type, :entry_price, :tp, :sl, 'PENDING', 'OPEN')
+                VALUES (:symbol, :timestamp, :signal_type, :entry_price, :tp, :sl, 'PENDING', 'OPEN')
                 ON CONFLICT (symbol, timestamp, signal_type, entry_price) DO NOTHING
             """), {
                 "symbol": used_symbol,
+                "timestamp": engine_output["timestamp"],  # Strictly maps database UNIQUE index constraint
                 "signal_type": signal_type,
                 "entry_price": engine_output["entry"],
                 "tp": engine_output["tp"],
                 "sl": engine_output["sl"]
             })
-            
-    # Display Current Signals Status from DB
-    st.subheader("📊 Live Tracking Dashboard")
+else:
+    st.error("⚠️ Yahoo Finance API is currently rate-limited or offline. Terminal features are active, but new price feeds are delayed.")
+
+# Display Current Signals Status from DB (Always Visible!)
+st.subheader("📊 Live Tracking Dashboard")
+try:
     with engine.connect() as conn:
         active_signals = conn.execute(text(
             "SELECT timestamp, signal_type, symbol, entry_price, tp, sl, status, result FROM signals_v2 ORDER BY id DESC LIMIT 10"
@@ -293,5 +310,5 @@ if engine_output:
         st.dataframe(df_signals, use_container_width=True)
     else:
         st.info("No active signals recorded yet. Waiting for structural sweeps...")
-else:
-    st.error("Yahoo Finance rate limit or network error. Please refresh in a few minutes.")
+except Exception as e:
+    st.error(f"Database error while loading dashboard: {e}")
